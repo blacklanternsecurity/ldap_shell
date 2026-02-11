@@ -382,9 +382,9 @@ class ADWSConnection:
         # Attributes that CANNOT be set during user Create (must use Put after creation)
         # Note: SharpADWS AddComputer sets userAccountControl on COMPUTERS successfully,
         # but USERS have stricter restrictions during Create.
+        # unicodePwd: Try setting during Create (can't be set via Put - AttributeTypeNotValid)
         POST_CREATE_ATTRIBUTES = {
-            'userAccountControl',  # Cannot set during user Create
-            'unicodePwd',  # Cannot set during user Create (password)
+            'userAccountControl',  # Cannot set during user Create, set via Put
         }
 
         # Split attributes
