@@ -88,6 +88,35 @@ class ADWSEntry:
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+    def entry_to_json(self, **kwargs) -> str:
+        """
+        Convert entry to JSON string (matches ldap3.Entry.entry_to_json).
+        """
+        import json
+        import base64
+
+        result = {
+            'dn': self.entry_dn,
+            'attributes': {}
+        }
+        # Convert attributes to JSON-serializable format
+        for key, value in self._attributes.items():
+            if isinstance(value, list):
+                # Convert values to JSON-compatible format
+                json_values = []
+                for v in value:
+                    if isinstance(v, bytes):
+                        # Encode bytes as base64 string
+                        json_values.append(base64.b64encode(v).decode('ascii'))
+                    else:
+                        json_values.append(str(v))
+                result['attributes'][key] = json_values
+            elif isinstance(value, bytes):
+                result['attributes'][key] = [base64.b64encode(value).decode('ascii')]
+            else:
+                result['attributes'][key] = [str(value)]
+        return json.dumps(result)
+
 
 class ADWSStandardExtendedOperations:
     """
