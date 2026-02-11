@@ -440,7 +440,7 @@ class ADWSConnection:
 
                         self._put_client.put(
                             object_ref=dn,
-                            operation='Add',
+                            operation='replace',  # Use 'replace' to set initial values, not 'Add'
                             attribute=attr_name,
                             data_type=data_type,
                             value=value_str
