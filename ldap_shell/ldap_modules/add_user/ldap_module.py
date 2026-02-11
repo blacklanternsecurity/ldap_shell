@@ -91,9 +91,10 @@ class LdapShellModule(BaseLdapModule):
             }
 
             # Create user object
+            # Only send primary objectClass (SharpADWS AddComputer only sends "computer", not full chain)
             result = self.client.add(
                 new_user_dn,
-                ['top', 'person', 'organizationalPerson', 'user'],
+                ['user'],  # Just primary class, not full inheritance chain
                 ucd
             )
 
