@@ -355,6 +355,11 @@ class ADWSConnection:
         """
         Add a new object via ADWS.
 
+        ADWS has restrictions on which attributes can be set during object creation.
+        This method automatically splits attributes into:
+        1. Create-safe attributes (set during object creation)
+        2. Post-create attributes (set via Put operations after creation)
+
         Args:
             dn: Distinguished name for the new object
             object_class: List of object classes (e.g., ['top', 'person', 'user'])
@@ -367,24 +372,84 @@ class ADWSConnection:
             log.error('ADWS factory client not available for object creation')
             return False
 
+        # Attributes that cannot be set during Create and must be set via Put afterward
+        POST_CREATE_ATTRIBUTES = {
+            'userAccountControl',
+            'accountExpires',
+            'unicodePwd',
+            'userPassword',
+            'pwdLastSet',
+            'lockoutTime',
+            'badPwdCount',
+            'badPasswordTime',
+            'lastLogon',
+            'lastLogonTimestamp',
+            'logonCount',
+            'objectCategory',  # Often auto-generated
+        }
+
+        # Split attributes
+        create_attrs = {}
+        post_create_attrs = {}
+
+        for attr_name, attr_value in attributes.items():
+            if attr_name == 'distinguishedName':
+                continue  # DN is handled separately
+            elif attr_name in POST_CREATE_ATTRIBUTES:
+                post_create_attrs[attr_name] = attr_value
+            else:
+                create_attrs[attr_name] = attr_value
+
         try:
-            # Use ADWS create operation
+            # Step 1: Create the object with basic attributes
+            log.debug('Creating object %s with %d attributes', dn, len(create_attrs))
             result = self._factory_client.create(
                 dn=dn,
                 object_classes=object_class,
-                attributes=attributes
+                attributes=create_attrs
             )
 
-            if result:
-                self.result = {'result': 0, 'description': 'success', 'message': ''}
-                return True
-            else:
+            if not result:
                 self.result = {
                     'result': 1,
                     'description': 'Create failed',
-                    'message': 'Server returned error'
+                    'message': 'Server returned error during object creation'
                 }
                 return False
+
+            # Step 2: Set post-create attributes via Put operations
+            if post_create_attrs and self._put_client:
+                log.debug('Setting %d post-create attributes on %s', len(post_create_attrs), dn)
+                for attr_name, attr_value in post_create_attrs.items():
+                    try:
+                        # Determine data type
+                        if isinstance(attr_value, bytes):
+                            # Binary attribute - base64 encode
+                            import base64
+                            encoded_value = base64.b64encode(attr_value).decode('ascii')
+                            data_type = 'base64Binary'
+                            value_str = encoded_value
+                        elif isinstance(attr_value, int):
+                            data_type = 'integer'
+                            value_str = str(attr_value)
+                        else:
+                            data_type = 'string'
+                            value_str = str(attr_value)
+
+                        self._put_client.put(
+                            object_ref=dn,
+                            operation='Add',
+                            attribute=attr_name,
+                            data_type=data_type,
+                            value=value_str
+                        )
+                        log.debug('Set attribute %s on %s', attr_name, dn)
+                    except Exception as e:
+                        log.warning('Failed to set post-create attribute %s: %s', attr_name, e)
+                        # Continue with other attributes even if one fails
+
+            self.result = {'result': 0, 'description': 'success', 'message': ''}
+            return True
 
         except Exception as e:
             log.error('ADWS create failed: %s', str(e))
