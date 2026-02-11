@@ -64,7 +64,8 @@ class ADWSEntry:
         """Allow dictionary-style attribute access (returns ADWSAttribute object)."""
         if key in self._attributes:
             return ADWSAttribute(key, self._attributes[key])
-        return None
+        # Return empty attribute if not found (matches ldap3 behavior)
+        return ADWSAttribute(key, [])
 
     def __contains__(self, key: str) -> bool:
         """Check if attribute exists."""
