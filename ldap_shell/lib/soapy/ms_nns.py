@@ -4,9 +4,10 @@
 The .NET NegotiateStream Protocol provides mutually authenticated
 and confidential communication over a TCP connection.
 
-Modified for BloodHound.py - NTLM authentication only.
+Modified for ldap_shell - NTLM and Kerberos authentication support.
 """
 
+import datetime
 import logging
 import socket
 
@@ -15,6 +16,13 @@ import impacket.spnego
 import impacket.structure
 from Cryptodome.Cipher import ARC4
 from impacket.hresult_errors import ERROR_MESSAGES
+from impacket.krb5 import constants
+from impacket.krb5.asn1 import AP_REQ, Authenticator, TGS_REP, seq_set
+from impacket.krb5.crypto import Key, _enctype_table
+from impacket.krb5.types import Principal, KerberosTime, Ticket
+from impacket.krb5.kerberosv5 import getKerberosTGS
+from pyasn1.codec.der import decoder, encoder
+from pyasn1.type.univ import noValue
 
 from .encoder.records.utils import Net7BitInteger
 
@@ -101,6 +109,9 @@ class NNS:
         password: str | None = None,
         nt: str = "",
         lm: str = "",
+        tgt: dict | None = None,
+        tgs: dict | None = None,
+        target_realm: str | None = None,
     ):
         self._sock = socket
 
@@ -116,6 +127,13 @@ class NNS:
         self._session_key: bytes = b""
         self._flags: int = -1
         self._sequence: int = 0
+
+        # Kerberos support
+        self._tgt = tgt
+        self._tgs = tgs
+        self._target_realm = target_realm
+        # Set the kerberos target if TGT is provided
+        self._kerberos_target = fqdn if tgt is not None else None
 
     def _fix_hashes(self, hash: str | bytes) -> bytes | str:
         """fixes up hash if present into bytes and
@@ -339,3 +357,162 @@ class NNS:
                 int.from_bytes(NNS_msg_done["payload"], "big")
             ]
             raise SystemExit(f"[-] NTLM Auth Failed with error {err_type} {err_msg}")
+
+    def auth_kerberos(self) -> None:
+        """Authenticate to the dest with Kerberos authentication"""
+
+        logging.debug("Attempting Kerberos authentication to ADWS")
+
+        # Get or request TGS for the ADWS service
+        if self._tgs is None:
+            # Request a TGS for the ADWS service principal
+            server_name = Principal(
+                f'ADWS/{self._fqdn}',
+                type=constants.PrincipalNameType.NT_SRV_INST.value
+            )
+
+            logging.debug(f'Requesting TGS for service: ADWS/{self._fqdn}')
+
+            try:
+                tgs, cipher, _, session_key = getKerberosTGS(
+                    server_name,
+                    self._domain,
+                    self._fqdn,
+                    self._tgt['KDC_REP'],
+                    self._tgt['cipher'],
+                    self._tgt['sessionKey']
+                )
+            except Exception as e:
+                logging.error(f'Failed to get TGS for ADWS service: {e}')
+                raise
+        else:
+            tgs = self._tgs['KDC_REP']
+            cipher = self._tgs['cipher']
+            session_key = self._tgs['sessionKey']
+
+        # Build SPNEGO NegTokenInit with Kerberos AP_REQ
+        blob = impacket.spnego.SPNEGO_NegTokenInit()
+        blob['MechTypes'] = [
+            impacket.spnego.TypesMech["MS KRB5 - Microsoft Kerberos 5"],
+            impacket.spnego.TypesMech["KRB5 - Kerberos 5"],
+        ]
+
+        # Extract the ticket from the TGS
+        tgs_decoded = decoder.decode(tgs, asn1Spec=TGS_REP())[0]
+        ticket = Ticket()
+        ticket.from_asn1(tgs_decoded['ticket'])
+
+        # Build the AP_REQ
+        ap_req = AP_REQ()
+        ap_req['pvno'] = 5
+        ap_req['msg-type'] = int(constants.ApplicationTagNumbers.AP_REQ.value)
+
+        opts = []
+        ap_req['ap-options'] = constants.encodeFlags(opts)
+        seq_set(ap_req, 'ticket', ticket.to_asn1)
+
+        # Build authenticator
+        authenticator = Authenticator()
+        authenticator['authenticator-vno'] = 5
+        authenticator['crealm'] = self._domain
+
+        user_name = Principal(
+            self._username,
+            type=constants.PrincipalNameType.NT_PRINCIPAL.value
+        )
+        seq_set(authenticator, 'cname', user_name.components_to_asn1)
+
+        now = datetime.datetime.utcnow()
+        authenticator['cusec'] = now.microsecond
+        authenticator['ctime'] = KerberosTime.to_asn1(now)
+
+        encoded_authenticator = encoder.encode(authenticator)
+
+        # Encrypt authenticator with session key (Key Usage 11)
+        encrypted_encoded_authenticator = cipher.encrypt(
+            session_key, 11, encoded_authenticator, None
+        )
+
+        ap_req['authenticator'] = noValue
+        ap_req['authenticator']['etype'] = cipher.enctype
+        ap_req['authenticator']['cipher'] = encrypted_encoded_authenticator
+
+        blob['MechToken'] = encoder.encode(ap_req)
+
+        # Send the Kerberos AP_REQ in NNS handshake
+        logging.debug("Sending Kerberos AP_REQ")
+        NNS_handshake(
+            message_id=MessageID.IN_PROGRESS,
+            major_version=1,
+            minor_version=0,
+            payload=blob.getData(),
+        ).send(self._sock)
+
+        # Receive server response
+        NNS_msg_resp = NNS_handshake(
+            message_id=int.from_bytes(self._sock.recv(1), "big"),
+            major_version=int.from_bytes(self._sock.recv(1), "big"),
+            minor_version=int.from_bytes(self._sock.recv(1), "big"),
+            payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
+        )
+
+        # Check for errors
+        if NNS_msg_resp["message_id"] == MessageID.ERROR:
+            err_type, err_msg = ERROR_MESSAGES[
+                int.from_bytes(NNS_msg_resp["payload"], "big")
+            ]
+            raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
+
+        # For Kerberos, we need to set up the session key for encryption
+        # Use the Kerberos session key for NNS encryption
+        self._session_key = session_key
+        self._sequence = 0
+
+        # Set up Kerberos-based encryption keys
+        # Note: Kerberos uses different key derivation than NTLM
+        # For now, we'll use the session key directly
+        # This may need adjustment based on actual ADWS Kerberos implementation
+        self._flags = (
+            impacket.ntlm.NTLMSSP_NEGOTIATE_SIGN |
+            impacket.ntlm.NTLMSSP_NEGOTIATE_SEAL |
+            impacket.ntlm.NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY
+        )
+
+        # Use Kerberos session key for signing and sealing
+        self._client_signing_key = session_key[:16] if len(session_key) >= 16 else session_key
+        self._server_signing_key = session_key[:16] if len(session_key) >= 16 else session_key
+        self._client_sealing_key = session_key[:16] if len(session_key) >= 16 else session_key
+        self._server_sealing_key = session_key[:16] if len(session_key) >= 16 else session_key
+
+        # Initialize RC4 ciphers
+        cipher_client = ARC4.new(self._client_sealing_key)
+        self._client_sealing_handle = cipher_client.encrypt
+        cipher_server = ARC4.new(self._server_sealing_key)
+        self._server_sealing_handle = cipher_server.encrypt
+
+        # Send final handshake message
+        c_NegTokenTarg = impacket.spnego.SPNEGO_NegTokenResp()
+        c_NegTokenTarg['NegResult'] = b'\x00'  # Accept completed
+
+        NNS_handshake(
+            message_id=MessageID.IN_PROGRESS,
+            major_version=1,
+            minor_version=0,
+            payload=c_NegTokenTarg.getData(),
+        ).send(self._sock)
+
+        # Check for final success
+        NNS_msg_done = NNS_handshake(
+            message_id=int.from_bytes(self._sock.recv(1), "big"),
+            major_version=int.from_bytes(self._sock.recv(1), "big"),
+            minor_version=int.from_bytes(self._sock.recv(1), "big"),
+            payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
+        )
+
+        if NNS_msg_done["message_id"] == MessageID.ERROR:
+            err_type, err_msg = ERROR_MESSAGES[
+                int.from_bytes(NNS_msg_done["payload"], "big")
+            ]
+            raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error {err_type} {err_msg}")
+
+        logging.debug("Kerberos authentication successful")

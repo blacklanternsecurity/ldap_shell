@@ -49,8 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '-use-adws', action='store_true',
-        help='Use ADWS (Active Directory Web Services) on port 9389 instead of LDAP. '
-             'Note: ADWS does not support Kerberos authentication, only NTLM'
+        help='Use ADWS (Active Directory Web Services) on port 9389 instead of LDAP'
     )
     parser.add_argument('-no-pass', action='store_true',
                         help='don\'t ask for password (useful for -k)')
@@ -105,11 +104,6 @@ def start_shell(options: argparse.Namespace):
         log.critical('Kerberos auth requires DNS name of the target DC. Use -dc-host.')
         sys.exit(1)
 
-    # Validate ADWS options
-    if options.use_adws and options.k:
-        log.critical('ADWS does not support Kerberos authentication. Use NTLM (password or hash) instead.')
-        sys.exit(1)
-
     if options.use_ldaps:
         use_ldaps = True
 
@@ -125,7 +119,8 @@ def start_shell(options: argparse.Namespace):
     # Route to appropriate connection method
     if options.use_adws:
         client = perform_adws_connection(
-            target, domain, username, password, options.hashes, nthash
+            target, domain, username, password, options.k,
+            lmhash, nthash, options.aesKey, options.dc_host
         )
     else:
         client = perform_ldap_connection(
@@ -157,7 +152,8 @@ def start_shell(options: argparse.Namespace):
 
 
 def perform_adws_connection(target: str, domain: str, username: str, password: str,
-                           hashes: Optional[str], nthash: Optional[str]):
+                           do_kerberos: bool, lmhash: Optional[str],
+                           nthash: Optional[str], aes_key: Optional[str], kdc_host: Optional[str]):
     """
     Establish ADWS connection using ADWSConnection adapter.
 
@@ -166,8 +162,11 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
         domain: Domain name
         username: Username for authentication
         password: Password for authentication
-        hashes: Full hash string (LMHASH:NTHASH)
+        do_kerberos: Whether to use Kerberos authentication
+        lmhash: LM hash
         nthash: NT hash only
+        aes_key: AES key for Kerberos
+        kdc_host: KDC hostname for Kerberos
 
     Returns:
         ADWSConnection object compatible with ldap3.Connection
@@ -178,7 +177,22 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
 
     try:
         # Create ADWS connection
-        if nthash:
+        if do_kerberos:
+            log.debug('Using Kerberos authentication')
+
+            # Get TGT and TGS for ADWS service
+            tgt, tgs = get_kerberos_credentials_for_adws(
+                username, password, domain, lmhash, nthash, aes_key, kdc_host
+            )
+
+            client = ADWSConnection(
+                hostname=target,
+                domain=domain,
+                username=username,
+                tgt=tgt,
+                tgs=tgs
+            )
+        elif nthash:
             log.debug('Using NT hash for authentication')
             client = ADWSConnection(
                 hostname=target,
@@ -195,7 +209,7 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
                 password=password
             )
         else:
-            log.critical('ADWS requires either password or NT hash for authentication')
+            log.critical('ADWS requires password, NT hash, or Kerberos credentials for authentication')
             sys.exit(1)
 
         # Attempt to bind (connect)
@@ -213,6 +227,119 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
         log.critical('ADWS connection failed: %s', str(e))
         log.debug('Details:', exc_info=True)
         sys.exit(1)
+
+
+def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
+                                     lmhash: str, nthash: str, aes_key: str,
+                                     kdc_host: str) -> tuple[dict, dict]:
+    """
+    Obtain TGT and TGS for ADWS service.
+
+    Args:
+        user: Username
+        password: Password
+        domain: Domain name
+        lmhash: LM hash
+        nthash: NT hash
+        aes_key: AES key
+        kdc_host: KDC hostname
+
+    Returns:
+        Tuple of (TGT dict, TGS dict)
+    """
+    TGT = None
+    TGS = None
+
+    log.debug('Obtaining Kerberos credentials for ADWS')
+
+    # Handle hash parameters
+    if (lmhash is not None and lmhash != '') or (nthash is not None and nthash != ''):
+        if len(lmhash) % 2:
+            lmhash = '0' + lmhash
+        if len(nthash) % 2:
+            nthash = '0' + nthash
+        try:
+            lmhash = unhexlify(lmhash)
+            nthash = unhexlify(nthash)
+        except TypeError:
+            pass
+
+    # Try to load from ccache
+    try:
+        ccache = CCache.loadFile(os.getenv('KRB5CCNAME'))
+    except Exception:
+        log.debug('No ccache present or failed to load')
+    else:
+        if len(domain) == 0:
+            domain = ccache.principal.realm['data'].decode('utf-8')
+            log.debug('Domain "%s" retrieved from CCache', domain)
+
+        log.debug('Using Kerberos cache %s', os.getenv('KRB5CCNAME'))
+
+        # Try to get TGS for ADWS service
+        principal = f'ADWS/{kdc_host.upper()}@{domain.upper()}'
+        creds = ccache.getCredential(principal)
+
+        if creds is None:
+            # Try to get TGT
+            principal = f'krbtgt/{domain.upper()}@{domain.upper()}'
+            creds = ccache.getCredential(principal)
+            if creds is not None:
+                TGT = creds.toTGT()
+                log.debug('Using TGT from cache')
+            else:
+                log.debug('No valid credentials found in cache')
+        else:
+            TGS = creds.toTGS(principal)
+            log.debug('Using TGS from cache')
+
+        if user == '' and creds is not None:
+            user = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
+        elif user == '' and len(ccache.principal.components) > 0:
+            user = ccache.principal.components[0]['data'].decode('utf-8')
+        log.debug('Username "%s" retrieved from CCache', user)
+
+    user_name = Principal(user, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
+
+    # Get TGT if we don't have one
+    if TGT is None:
+        if TGS is None:
+            log.debug('Requesting TGT from KDC')
+            tgt, cipher, old_session_key, session_key = getKerberosTGT(
+                user_name, password, domain, lmhash, nthash, aes_key, kdc_host
+            )
+            TGT = {
+                'KDC_REP': tgt,
+                'cipher': cipher,
+                'sessionKey': session_key
+            }
+    else:
+        tgt = TGT['KDC_REP']
+        cipher = TGT['cipher']
+        session_key = TGT['sessionKey']
+
+    # Get TGS for ADWS service if we don't have one
+    if TGS is None:
+        server_name = Principal(
+            f'ADWS/{kdc_host}',
+            type=constants.PrincipalNameType.NT_SRV_INST.value
+        )
+        log.debug(f'Requesting TGS for ADWS service: ADWS/{kdc_host}')
+
+        tgs, cipher, old_session_key, session_key = getKerberosTGS(
+            server_name, domain, kdc_host, tgt, cipher, session_key
+        )
+        TGS = {
+            'KDC_REP': tgs,
+            'cipher': cipher,
+            'sessionKey': session_key
+        }
+    else:
+        tgs = TGS['KDC_REP']
+        cipher = TGS['cipher']
+        session_key = TGS['sessionKey']
+
+    return TGT, TGS
 
 
 def perform_ldap_connection(target: str, domain: str, username: str, password: str,

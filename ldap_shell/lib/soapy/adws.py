@@ -232,13 +232,31 @@ class NTLMAuth(ADWSAuthType):
         self.password = password
 
 
+class KerberosAuth(ADWSAuthType):
+    def __init__(self, tgt: dict, tgs: dict | None = None, target_realm: str | None = None):
+        """
+        Kerberos authentication using TGT/TGS.
+
+        Args:
+            tgt: Dictionary containing TGT information with keys:
+                 'KDC_REP': TGT response data
+                 'cipher': Cipher object
+                 'sessionKey': Session key
+            tgs: Optional dictionary containing TGS information (same format as TGT)
+            target_realm: Optional target realm for cross-realm authentication
+        """
+        self.tgt = tgt
+        self.tgs = tgs
+        self.target_realm = target_realm
+
+
 class ADWSConnect:
     def __init__(
         self,
         fqdn: str,
         domain: str,
         username: str,
-        auth: NTLMAuth,
+        auth: NTLMAuth | KerberosAuth,
         resource: str,
     ):
         """Creates an ADWS client connection to the specified endpoint.
@@ -247,7 +265,7 @@ class ADWSConnect:
             fqdn: fqdn of the domain controller the ADWS service is running on
             domain: the domain
             username: user to auth as
-            auth: auth mechanism to use (NTLMAuth)
+            auth: auth mechanism to use (NTLMAuth or KerberosAuth)
             resource: the resource dictates what endpoint the client connects to
         """
         self._fqdn = fqdn
@@ -268,6 +286,16 @@ class ADWSConnect:
                 username=self._username,
                 password=self._auth.password,
                 nt=self._auth.nt if self._auth.nt else "",
+            )
+        elif isinstance(self._auth, KerberosAuth):
+            return NNS(
+                socket=sock,
+                fqdn=self._fqdn,
+                domain=self._domain,
+                username=self._username,
+                tgt=self._auth.tgt,
+                tgs=self._auth.tgs,
+                target_realm=self._auth.target_realm,
             )
         raise NotImplementedError(f"Unsupported auth type: {type(self._auth)}")
 
@@ -469,9 +497,9 @@ class ADWSConnect:
         return results
 
     @classmethod
-    def pull_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth) -> Self:
+    def pull_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
         return cls(ip, domain, username, auth, "Enumeration")
 
     @classmethod
-    def put_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth) -> Self:
+    def put_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
         return cls(ip, domain, username, auth, "Resource")

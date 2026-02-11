@@ -14,7 +14,7 @@ Modified for BloodHound.py - NTLM authentication only.
 from .ms_nmf import NMFConnection
 from .ms_nns import NNS
 from .encoder import Encoder
-from .adws import ADWSConnect, NTLMAuth, ADWSAuthType
+from .adws import ADWSConnect, NTLMAuth, KerberosAuth, ADWSAuthType
 from .soap_templates import NAMESPACES
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "Encoder",
     "ADWSConnect",
     "NTLMAuth",
+    "KerberosAuth",
     "ADWSAuthType",
     "NAMESPACES",
 ]

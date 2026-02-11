@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Generator
 from uuid import UUID
 from xml.etree import ElementTree
 
-from ldap_shell.lib.soapy import ADWSConnect, NTLMAuth, NAMESPACES
+from ldap_shell.lib.soapy import ADWSConnect, NTLMAuth, KerberosAuth, NAMESPACES
 from impacket.ldap.ldaptypes import LDAP_SID
 
 log = logging.getLogger('ldap-shell')
@@ -116,7 +116,9 @@ class ADWSConnection:
     }
 
     def __init__(self, hostname: str, domain: str, username: str,
-                 password: Optional[str] = None, nt_hash: Optional[str] = None):
+                 password: Optional[str] = None, nt_hash: Optional[str] = None,
+                 tgt: Optional[dict] = None, tgs: Optional[dict] = None,
+                 target_realm: Optional[str] = None):
         """
         Initialize ADWS connection adapter.
 
@@ -126,6 +128,9 @@ class ADWSConnection:
             username: Username for authentication
             password: Password for authentication (if using password auth)
             nt_hash: NT hash for authentication (if using hash auth)
+            tgt: TGT dictionary for Kerberos authentication
+            tgs: TGS dictionary for Kerberos authentication
+            target_realm: Target realm for cross-realm Kerberos authentication
         """
         self.hostname = hostname
         self.domain = domain
@@ -146,12 +151,17 @@ class ADWSConnection:
         self._put_client: Optional[ADWSConnect] = None
 
         # Create auth object
-        if nt_hash:
+        if tgt is not None:
+            # Kerberos authentication
+            self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm)
+        elif nt_hash:
+            # NTLM with hash
             self._auth = NTLMAuth(hashes=nt_hash)
         elif password:
+            # NTLM with password
             self._auth = NTLMAuth(password=password)
         else:
-            raise ValueError("Either password or nt_hash must be provided")
+            raise ValueError("Either password, nt_hash, or tgt must be provided")
 
         # User string for compatibility
         self.user = f"{domain}\\{username}"
