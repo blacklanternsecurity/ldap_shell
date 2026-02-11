@@ -413,7 +413,8 @@ class ADWSConnection:
 
     def search(self, search_base: str, search_filter: str,
                attributes: Optional[List[str]] = None,
-               search_scope: str = 'SUBTREE') -> bool:
+               search_scope: str = 'SUBTREE',
+               controls: Optional[List] = None) -> bool:
         """
         Search via ADWS, populating self.entries with results.
 
@@ -422,6 +423,7 @@ class ADWSConnection:
             search_filter: LDAP filter string
             attributes: List of attributes to retrieve
             search_scope: Search scope (ignored for ADWS, always subtree)
+            controls: LDAP controls (accepted for compatibility, not fully implemented in ADWS)
 
         Returns:
             True if search succeeded, False otherwise
@@ -599,13 +601,14 @@ class ADWSConnection:
             }
             return False
 
-    def modify(self, dn: str, changes: Dict[str, Any]) -> bool:
+    def modify(self, dn: str, changes: Dict[str, Any], controls: Optional[List] = None) -> bool:
         """
         Modify an object via ADWS.
 
         Args:
             dn: Distinguished name of object to modify
             changes: Dictionary of changes to apply
+            controls: LDAP controls (accepted for compatibility, not fully implemented in ADWS)
 
         Returns:
             True if modification succeeded, False otherwise
