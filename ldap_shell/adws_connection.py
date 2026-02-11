@@ -321,8 +321,21 @@ class ADWSConnection:
         self.entries = []
 
         # ADWS requires explicit attribute lists
+        # Note: '*' causes "size limit exceeded" errors for large result sets
+        # Instead, we request a comprehensive list of common AD attributes
         if attributes is None or len(attributes) == 0 or attributes == ['*']:
-            attr_list = ['*', 'distinguishedName', 'objectSid', 'objectClass']
+            # Common AD attributes for ldapdomaindump compatibility
+            attr_list = [
+                'distinguishedName', 'objectSid', 'objectClass', 'name',
+                'sAMAccountName', 'userPrincipalName', 'mail',
+                'displayName', 'description', 'memberOf', 'member',
+                'primaryGroupID', 'userAccountControl', 'objectCategory',
+                'cn', 'ou', 'whenCreated', 'whenChanged',
+                'lastLogon', 'lastLogonTimestamp', 'pwdLastSet',
+                'servicePrincipalName', 'dNSHostName', 'operatingSystem',
+                'operatingSystemVersion', 'operatingSystemServicePack',
+                'adminCount', 'sIDHistory', 'objectGUID'
+            ]
         else:
             attr_list = list(attributes)
             # Ensure DN is always included
