@@ -22,7 +22,7 @@ class ADWSAttribute:
     """
     Mimics ldap3.Attribute to provide .value access pattern.
     """
-    def __init__(self, key, values):
+    def __init__(self, key, values, raw_values=None):
         self.key = key  # Attribute name
         if isinstance(values, list):
             self.values = values
@@ -31,6 +31,13 @@ class ADWSAttribute:
         else:
             self.values = [values]
             self.value = values
+
+        # raw_values for ldap3 compatibility (used for binary attributes like nTSecurityDescriptor)
+        if raw_values is not None:
+            self.raw_values = raw_values if isinstance(raw_values, list) else [raw_values]
+        else:
+            # If no raw values provided, use processed values as fallback
+            self.raw_values = self.values
 
     def __str__(self):
         return str(self.value)
@@ -68,9 +75,11 @@ class ADWSEntry:
         key_lower = key.lower()
         for attr_name in self._attributes:
             if attr_name.lower() == key_lower:
-                return ADWSAttribute(attr_name, self._attributes[attr_name])
+                # Pass both processed and raw values
+                raw_vals = self._raw_attributes.get(attr_name, self._attributes[attr_name])
+                return ADWSAttribute(attr_name, self._attributes[attr_name], raw_vals)
         # Return empty attribute if not found (matches ldap3 behavior)
-        return ADWSAttribute(key, [])
+        return ADWSAttribute(key, [], [])
 
     def __contains__(self, key: str) -> bool:
         """Check if attribute exists. Case-insensitive like ldap3."""
@@ -92,10 +101,12 @@ class ADWSEntry:
         name_lower = name.lower()
         for attr_name in self._attributes:
             if attr_name.lower() == name_lower:
-                return ADWSAttribute(attr_name, self._attributes[attr_name])
+                # Pass both processed and raw values
+                raw_vals = self._raw_attributes.get(attr_name, self._attributes[attr_name])
+                return ADWSAttribute(attr_name, self._attributes[attr_name], raw_vals)
 
         # Return empty attribute for missing attributes (like ldap3)
-        return ADWSAttribute(name, [])
+        return ADWSAttribute(name, [], [])
 
     def entry_to_json(self, **kwargs) -> str:
         """
