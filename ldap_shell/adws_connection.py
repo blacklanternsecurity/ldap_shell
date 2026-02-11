@@ -337,6 +337,50 @@ class ADWSConnection:
             }
             return False
 
+    def add(self, dn: str, object_class: List[str], attributes: Dict[str, Any]) -> bool:
+        """
+        Add a new object via ADWS.
+
+        Args:
+            dn: Distinguished name for the new object
+            object_class: List of object classes (e.g., ['top', 'person', 'user'])
+            attributes: Dictionary of attributes to set on the new object
+
+        Returns:
+            True if creation succeeded, False otherwise
+        """
+        if not self.bound or self._put_client is None:
+            log.error('ADWS put client not available for object creation')
+            return False
+
+        try:
+            # Use ADWS create operation
+            result = self._put_client.create(
+                dn=dn,
+                object_classes=object_class,
+                attributes=attributes
+            )
+
+            if result:
+                self.result = {'result': 0, 'description': 'success', 'message': ''}
+                return True
+            else:
+                self.result = {
+                    'result': 1,
+                    'description': 'Create failed',
+                    'message': 'Server returned error'
+                }
+                return False
+
+        except Exception as e:
+            log.error('ADWS create failed: %s', str(e))
+            self.result = {
+                'result': 1,
+                'description': 'Create failed',
+                'message': str(e)
+            }
+            return False
+
     def modify(self, dn: str, changes: Dict[str, Any]) -> bool:
         """
         Modify an object via ADWS.
@@ -529,6 +573,17 @@ class ADWSConnection:
 
         # Return ADWSEntry object
         return ADWSEntry(dn=dn, attributes=attributes, raw_attributes=raw_attributes)
+
+    def start_tls(self) -> bool:
+        """
+        Start TLS (no-op for ADWS - already encrypted via MS-NNS).
+
+        Returns:
+            True (ADWS has built-in encryption)
+        """
+        # ADWS already has built-in encryption via MS-NNS
+        # This method exists for ldap3 compatibility
+        return True
 
     def unbind(self) -> bool:
         """

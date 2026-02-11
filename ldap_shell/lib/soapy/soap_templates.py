@@ -102,3 +102,27 @@ LDAP_PUT_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-e
             </da:ModifyRequest>
         </s:Body>
     </s:Envelope>"""
+
+
+LDAP_CREATE_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+        xmlns:a="http://www.w3.org/2005/08/addressing"
+        xmlns:addata="http://schemas.microsoft.com/2008/1/ActiveDirectory/Data"
+        xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory"
+        xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <s:Header>
+            <a:Action s:mustUnderstand="1">http://schemas.xmlsoap.org/ws/2004/09/transfer/Create</a:Action>
+            <ad:instance>ldap:389</ad:instance>
+            <a:MessageID>urn:uuid:{uuid}</a:MessageID>
+            <a:ReplyTo>
+                <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
+            </a:ReplyTo>
+            <a:To s:mustUnderstand="1">net.tcp://{fqdn}:9389/ActiveDirectoryWebServices/Windows/Resource</a:To>
+        </s:Header>
+        <s:Body>
+            <addata:directory-object>
+                <ad:distinguishedName>{dn}</ad:distinguishedName>
+                {attributes}
+            </addata:directory-object>
+        </s:Body>
+    </s:Envelope>"""

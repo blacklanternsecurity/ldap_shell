@@ -28,6 +28,7 @@ from . import ms_nmf
 from .ms_nns import NNS
 
 from .soap_templates import (
+    LDAP_CREATE_FSTRING,
     LDAP_PULL_FSTRING,
     LDAP_PUT_FSTRING,
     LDAP_QUERY_FSTRING,
@@ -473,6 +474,77 @@ class ADWSConnect:
             or len(body) == 0
             and (body.text is None or body.text.strip() == "")
         )
+
+    def create(
+        self,
+        dn: str,
+        object_classes: list[str],
+        attributes: dict[str, any],
+    ) -> bool:
+        """Create a new AD object."""
+        if self._resource != "Resource":
+            raise NotImplementedError("Create is only supported on 'put' clients")
+
+        # Build attributes XML
+        attrs_xml = []
+
+        # Add objectClass
+        for obj_class in object_classes:
+            attrs_xml.append(f'<ad:objectClass>{obj_class}</ad:objectClass>')
+
+        # Add other attributes
+        for attr_name, attr_value in attributes.items():
+            if attr_name == 'distinguishedName':
+                continue  # DN is already in the template
+
+            # Handle different attribute types
+            if isinstance(attr_value, bytes):
+                # Binary attribute - base64 encode
+                import base64
+                encoded_value = base64.b64encode(attr_value).decode('ascii')
+                attrs_xml.append(
+                    f'<ad:{attr_name} xsi:type="xsd:base64Binary">{encoded_value}</ad:{attr_name}>'
+                )
+            elif isinstance(attr_value, int):
+                attrs_xml.append(
+                    f'<ad:{attr_name} xsi:type="xsd:integer">{attr_value}</ad:{attr_name}>'
+                )
+            elif isinstance(attr_value, list):
+                # Multi-valued attribute
+                for value in attr_value:
+                    if isinstance(value, bytes):
+                        import base64
+                        encoded_value = base64.b64encode(value).decode('ascii')
+                        attrs_xml.append(
+                            f'<ad:{attr_name} xsi:type="xsd:base64Binary">{encoded_value}</ad:{attr_name}>'
+                        )
+                    else:
+                        attrs_xml.append(f'<ad:{attr_name}>{value}</ad:{attr_name}>')
+            else:
+                # String attribute
+                attrs_xml.append(f'<ad:{attr_name}>{attr_value}</ad:{attr_name}>')
+
+        create_vars = {
+            "uuid": str(uuid4()),
+            "fqdn": self._fqdn,
+            "dn": dn,
+            "attributes": '\n                '.join(attrs_xml),
+        }
+
+        create_msg = LDAP_CREATE_FSTRING.format(**create_vars)
+
+        self._nmf.send(create_msg)
+        resp_str = self._nmf.recv()
+        et = self._handle_str_to_xml(resp_str)
+        if not et:
+            raise ValueError("was unable to parse xml from the server response")
+
+        # Check for errors in response
+        fault = et.find(".//s:Fault", namespaces=NAMESPACES)
+        if fault is not None:
+            return False
+
+        return True
 
     def pull(
         self,
