@@ -82,6 +82,7 @@ class ADWSEntry:
         Allow ldap3-style attribute access (e.g., entry.objectSid.value).
         This is called when normal attribute lookup fails.
         Case-insensitive like ldap3.
+        Returns empty ADWSAttribute for missing attributes (like ldap3).
         """
         if name.startswith('_'):
             # Avoid infinite recursion for private attributes
@@ -93,7 +94,8 @@ class ADWSEntry:
             if attr_name.lower() == name_lower:
                 return ADWSAttribute(attr_name, self._attributes[attr_name])
 
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        # Return empty attribute for missing attributes (like ldap3)
+        return ADWSAttribute(name, [])
 
     def entry_to_json(self, **kwargs) -> str:
         """
