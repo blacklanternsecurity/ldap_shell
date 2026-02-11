@@ -58,18 +58,15 @@ class LdapShellModule(BaseLdapModule):
         else:
             group_dn = f"CN={self.args.group_name},CN=Users,{self.domain_dumper.root}"
 
-        # Attributes for group creation
+        # Attributes for group creation (simplified, matching ADWS patterns)
+        # Note: cn and name are auto-generated from DN, don't send them
         group_attributes = {
-            'objectClass': ['top', 'group'],
-            'cn': self.args.group_name,
-            'name': self.args.group_name,
             'sAMAccountName': self.args.group_name,
-            'displayName': self.args.group_name,
             'description': f"Group created via ldap_shell"
         }
 
-        # Create group
-        if self.client.add(group_dn, attributes=group_attributes):
+        # Create group - use correct signature: add(dn, object_class_list, attributes_dict)
+        if self.client.add(group_dn, ['group'], group_attributes):
             self.log.info(f"Group {self.args.group_name} created successfully at {group_dn}")
         else:
             self.log.error(f"Failed to create group {self.args.group_name}: {self.client.result}")

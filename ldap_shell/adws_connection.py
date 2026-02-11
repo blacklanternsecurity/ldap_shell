@@ -610,12 +610,29 @@ class ADWSConnection:
 
                     # ADWS put only handles one value at a time
                     for value in values:
+                        # Determine data type (matching add() method's logic)
+                        if attr == 'userAccountControl':
+                            # Special case: userAccountControl must be sent as string per SharpADWS
+                            data_type = 'string'
+                            value_str = str(value)
+                        elif isinstance(value, bytes):
+                            # Binary attribute - base64 encode
+                            import base64
+                            data_type = 'base64Binary'
+                            value_str = base64.b64encode(value).decode('ascii')
+                        elif isinstance(value, int):
+                            data_type = 'int'
+                            value_str = str(value)
+                        else:
+                            data_type = 'string'
+                            value_str = str(value)
+
                         self._put_client.put(
                             object_ref=dn,
                             operation=adws_op,
                             attribute=attr,
-                            data_type='string',  # Could be smarter about type detection
-                            value=str(value)
+                            data_type=data_type,
+                            value=value_str
                         )
 
             self.result = {'result': 0, 'description': 'success', 'message': ''}

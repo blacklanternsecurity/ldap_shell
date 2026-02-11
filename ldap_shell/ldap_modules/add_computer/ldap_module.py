@@ -90,28 +90,26 @@ class LdapShellModule(BaseLdapModule):
 
             computer_dn = f"CN={computer_hostname},{self.args.target_dn or f'CN=Computers,{self.domain_dumper.root}'}"
 
-            # Prepare computer attributes
+            # Prepare computer attributes (matching SharpADWS AddComputer implementation)
             domain = LdapUtils.get_domain_name(self.domain_dumper.root)
-            spns = [
-                f'HOST/{computer_hostname}',
-                f'HOST/{computer_hostname}.{domain}',
-                f'RestrictedKrbHost/{computer_hostname}',
-                f'RestrictedKrbHost/{computer_hostname}.{domain}',
-            ]
-            # Create computer object
+
+            # SharpADWS only sends ONE SPN during create: servicePrincipalName = $"HOST/{ComputerName}"
+            # Additional SPNs can be added later if needed
+            spn = f'HOST/{computer_hostname}'
+
+            # Create computer object (simplified attributes matching SharpADWS)
+            # SharpADWS AddComputer only sets these 6 attributes during creation:
+            # objectClass, dNSHostName, userAccountControl, servicePrincipalName, sAMAccountName, unicodePwd
             result = self.client.add(
                 computer_dn,
-                ['top', 'person', 'organizationalPerson', 'user', 'computer'],
+                ['computer'],  # SharpADWS uses just 'computer', not full inheritance chain
                 {
                     'sAMAccountName': self.args.computer_name,
-                    'userAccountControl': 4096,
+                    'userAccountControl': 4096,  # Will be converted to string and set via Put
                     'unicodePwd': f'"{password}"'.encode('utf-16-le'),
-                    'servicePrincipalName': spns,
-                    'objectCategory': f'CN=Computer,CN=Schema,CN=Configuration,{self.domain_dumper.root}',
+                    'servicePrincipalName': spn,  # Single SPN value, not list
                     'dnsHostName': f'{computer_hostname}.{domain}',
-                    'name': computer_hostname,
-                    'cn': computer_hostname,
-                    'displayName': computer_hostname
+                    # Note: name, cn, displayName, objectCategory are auto-generated - don't send them
                 }
             )
 
