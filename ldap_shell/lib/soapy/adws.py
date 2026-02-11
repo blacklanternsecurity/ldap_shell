@@ -449,12 +449,21 @@ class ADWSConnect:
         if self._resource != "Resource":
             raise NotImplementedError("Put is only supported on 'put' clients")
 
+        # Add namespace prefix to attribute name (per SharpADWS AttributeNs.LookupNs)
+        # Regular attributes use 'addata:' prefix
+        # Synthetic attributes like 'container-hierarchy-parent' use 'ad:' prefix
+        synthetic_attrs = {'container-hierarchy-parent', 'relativeDistinguishedName', 'objectReferenceProperty'}
+        if attribute in synthetic_attrs:
+            attr_with_ns = f'ad:{attribute}'
+        else:
+            attr_with_ns = f'addata:{attribute}'
+
         put_vars = {
             "object_ref": object_ref,
             "uuid": str(uuid4()),
             "fqdn": self._fqdn,
             "operation": operation,
-            "attribute": attribute,
+            "attribute": attr_with_ns,  # Use namespaced attribute name
             "data_type": data_type,
             "value": value,
         }
