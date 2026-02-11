@@ -637,12 +637,13 @@ class ADWSConnection:
                     values = change[1]
 
                     # Map ldap3 operations to ADWS operations
+                    # IMPORTANT: ADWS uses lowercase operation names per SharpADWS
                     if operation == 'MODIFY_ADD':
-                        adws_op = 'Add'
+                        adws_op = 'add'
                     elif operation == 'MODIFY_DELETE':
-                        adws_op = 'Delete'
+                        adws_op = 'delete'
                     elif operation == 'MODIFY_REPLACE':
-                        adws_op = 'Replace'
+                        adws_op = 'replace'
                     else:
                         log.warning('Unknown modify operation: %s', operation)
                         continue
