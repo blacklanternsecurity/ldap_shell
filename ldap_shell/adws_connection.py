@@ -205,6 +205,7 @@ class ADWSConnection:
         # ADWS clients (will be created on connect)
         self._pull_client: Optional[ADWSConnect] = None
         self._put_client: Optional[ADWSConnect] = None
+        self._factory_client: Optional[ADWSConnect] = None
 
         # Create auth object
         if tgt is not None:
@@ -258,6 +259,19 @@ class ADWSConnection:
             except Exception as e:
                 log.warning('Failed to create ADWS put client: %s', e)
                 log.warning('Modification operations will not be available')
+
+            # Create factory client (for object creation operations)
+            try:
+                self._factory_client = ADWSConnect.factory_client(
+                    ip=self.hostname,
+                    domain=self.domain,
+                    username=self.username,
+                    auth=self._auth,
+                )
+                log.debug('Successfully connected to ADWS (factory client)')
+            except Exception as e:
+                log.warning('Failed to create ADWS factory client: %s', e)
+                log.warning('Object creation operations will not be available')
 
             self.bound = True
             self.closed = False
@@ -349,13 +363,13 @@ class ADWSConnection:
         Returns:
             True if creation succeeded, False otherwise
         """
-        if not self.bound or self._put_client is None:
-            log.error('ADWS put client not available for object creation')
+        if not self.bound or self._factory_client is None:
+            log.error('ADWS factory client not available for object creation')
             return False
 
         try:
             # Use ADWS create operation
-            result = self._put_client.create(
+            result = self._factory_client.create(
                 dn=dn,
                 object_classes=object_class,
                 attributes=attributes

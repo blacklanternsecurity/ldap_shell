@@ -481,53 +481,87 @@ class ADWSConnect:
         object_classes: list[str],
         attributes: dict[str, any],
     ) -> bool:
-        """Create a new AD object."""
-        if self._resource != "Resource":
-            raise NotImplementedError("Create is only supported on 'put' clients")
+        """Create a new AD object using ADWS ResourceFactory."""
+        if self._resource != "ResourceFactory":
+            raise NotImplementedError("Create is only supported on 'factory' clients")
 
-        # Build attributes XML
+        # Parse DN to extract RDN and parent container
+        import re
+        dn_parts = [part.strip() for part in dn.split(',')]
+        rdn = dn_parts[0]  # e.g., "CN=username"
+        parent_container = ','.join(dn_parts[1:])  # e.g., "CN=Users,DC=domain,DC=local"
+
+        # Build attributes XML in AttributeTypeAndValue format
         attrs_xml = []
 
-        # Add objectClass
-        for obj_class in object_classes:
-            attrs_xml.append(f'<ad:objectClass>{obj_class}</ad:objectClass>')
+        # Add objectClass(es) as first attribute
+        if object_classes:
+            values_xml = []
+            for obj_class in object_classes:
+                values_xml.append(f'<ad:value xsi:type="xsd:string">{obj_class}</ad:value>')
+
+            attrs_xml.append(f'''<da:AttributeTypeAndValue>
+                    <da:AttributeType>addata:objectClass</da:AttributeType>
+                    <da:AttributeValue>
+                        {chr(10).join(['                        ' + v for v in values_xml])}
+                    </da:AttributeValue>
+                </da:AttributeTypeAndValue>''')
 
         # Add other attributes
         for attr_name, attr_value in attributes.items():
             if attr_name == 'distinguishedName':
-                continue  # DN is already in the template
+                continue  # We handle DN via container-hierarchy-parent and RDN
+
+            # Build attribute values
+            values_xml = []
 
             # Handle different attribute types
             if isinstance(attr_value, bytes):
                 # Binary attribute - base64 encode
                 import base64
                 encoded_value = base64.b64encode(attr_value).decode('ascii')
-                attrs_xml.append(
-                    f'<ad:{attr_name} xsi:type="xsd:base64Binary">{encoded_value}</ad:{attr_name}>'
-                )
+                values_xml.append(f'<ad:value xsi:type="xsd:base64Binary">{encoded_value}</ad:value>')
             elif isinstance(attr_value, int):
-                attrs_xml.append(
-                    f'<ad:{attr_name} xsi:type="xsd:integer">{attr_value}</ad:{attr_name}>'
-                )
+                values_xml.append(f'<ad:value xsi:type="xsd:integer">{attr_value}</ad:value>')
             elif isinstance(attr_value, list):
                 # Multi-valued attribute
                 for value in attr_value:
                     if isinstance(value, bytes):
                         import base64
                         encoded_value = base64.b64encode(value).decode('ascii')
-                        attrs_xml.append(
-                            f'<ad:{attr_name} xsi:type="xsd:base64Binary">{encoded_value}</ad:{attr_name}>'
-                        )
+                        values_xml.append(f'<ad:value xsi:type="xsd:base64Binary">{encoded_value}</ad:value>')
                     else:
-                        attrs_xml.append(f'<ad:{attr_name}>{value}</ad:{attr_name}>')
+                        values_xml.append(f'<ad:value xsi:type="xsd:string">{value}</ad:value>')
             else:
                 # String attribute
-                attrs_xml.append(f'<ad:{attr_name}>{attr_value}</ad:{attr_name}>')
+                values_xml.append(f'<ad:value xsi:type="xsd:string">{attr_value}</ad:value>')
+
+            attrs_xml.append(f'''<da:AttributeTypeAndValue>
+                    <da:AttributeType>addata:{attr_name}</da:AttributeType>
+                    <da:AttributeValue>
+                        {chr(10).join(['                        ' + v for v in values_xml])}
+                    </da:AttributeValue>
+                </da:AttributeTypeAndValue>''')
+
+        # Add parent container
+        attrs_xml.append(f'''<da:AttributeTypeAndValue>
+                    <da:AttributeType>ad:container-hierarchy-parent</da:AttributeType>
+                    <da:AttributeValue>
+                        <ad:value xsi:type="xsd:string">{parent_container}</ad:value>
+                    </da:AttributeValue>
+                </da:AttributeTypeAndValue>''')
+
+        # Add RDN (relative distinguished name)
+        attrs_xml.append(f'''<da:AttributeTypeAndValue>
+                    <da:AttributeType>ad:relativeDistinguishedName</da:AttributeType>
+                    <da:AttributeValue>
+                        <ad:value xsi:type="xsd:string">{rdn}</ad:value>
+                    </da:AttributeValue>
+                </da:AttributeTypeAndValue>''')
 
         create_vars = {
             "uuid": str(uuid4()),
             "fqdn": self._fqdn,
-            "dn": dn,
             "attributes": '\n                '.join(attrs_xml),
         }
 
@@ -599,3 +633,7 @@ class ADWSConnect:
     @classmethod
     def put_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
         return cls(ip, domain, username, auth, "Resource")
+
+    @classmethod
+    def factory_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
+        return cls(ip, domain, username, auth, "ResourceFactory")

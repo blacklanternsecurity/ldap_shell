@@ -106,23 +106,24 @@ LDAP_PUT_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-e
 
 LDAP_CREATE_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
         xmlns:a="http://www.w3.org/2005/08/addressing"
-        xmlns:addata="http://schemas.microsoft.com/2008/1/ActiveDirectory/Data"
+        xmlns:da="http://schemas.microsoft.com/2006/11/IdentityManagement/DirectoryAccess"
         xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory"
+        xmlns:addata="http://schemas.microsoft.com/2008/1/ActiveDirectory/Data"
         xmlns:xsd="http://www.w3.org/2001/XMLSchema"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
         <s:Header>
             <a:Action s:mustUnderstand="1">http://schemas.xmlsoap.org/ws/2004/09/transfer/Create</a:Action>
+            <da:IdentityManagementOperation s:mustUnderstand="1"></da:IdentityManagementOperation>
             <ad:instance>ldap:389</ad:instance>
             <a:MessageID>urn:uuid:{uuid}</a:MessageID>
             <a:ReplyTo>
                 <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
             </a:ReplyTo>
-            <a:To s:mustUnderstand="1">net.tcp://{fqdn}:9389/ActiveDirectoryWebServices/Windows/Resource</a:To>
+            <a:To s:mustUnderstand="1">net.tcp://{fqdn}:9389/ActiveDirectoryWebServices/Windows/ResourceFactory</a:To>
         </s:Header>
         <s:Body>
-            <addata:directory-object>
-                <ad:distinguishedName>{dn}</ad:distinguishedName>
+            <da:AddRequest Dialect="http://schemas.microsoft.com/2008/1/ActiveDirectory/Dialect/XPath-Level-1">
                 {attributes}
-            </addata:directory-object>
+            </da:AddRequest>
         </s:Body>
     </s:Envelope>"""
