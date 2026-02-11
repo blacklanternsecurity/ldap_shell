@@ -316,6 +316,7 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
                 TGT = {
                     'KDC_REP': tgt,
                     'cipher': cipher,
+                    'oldSessionKey': old_session_key,
                     'sessionKey': session_key
                 }
                 log.debug('Successfully obtained TGT')
@@ -344,6 +345,7 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
             TGS = {
                 'KDC_REP': tgs,
                 'cipher': cipher,
+                'oldSessionKey': old_session_key,
                 'sessionKey': session_key
             }
             log.debug('Successfully obtained TGS for HOST/%s', kdc_host)

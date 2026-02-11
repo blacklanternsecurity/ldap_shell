@@ -388,14 +388,14 @@ class NNS:
 
                 # Create CCache object
                 ccache = CCache()
-                ccache.fromTGT(self._tgt['KDC_REP'], self._tgt['sessionKey'], self._tgt['sessionKey'])
+                ccache.fromTGT(self._tgt['KDC_REP'], self._tgt['oldSessionKey'], self._tgt['sessionKey'])
 
                 # If we have TGS, add it too
                 if self._tgs is not None:
                     # Extract the service principal from TGS
                     tgs_rep = self._tgs['KDC_REP']
                     service_principal = f"HOST/{self._fqdn}@{self._domain.upper()}"
-                    ccache.fromTGS(self._tgs['KDC_REP'], self._tgs['sessionKey'], self._tgs['sessionKey'])
+                    ccache.fromTGS(self._tgs['KDC_REP'], self._tgs['oldSessionKey'], self._tgs['sessionKey'])
 
                 # Save the ccache to the temp file
                 ccache.saveFile(temp_ccache)
