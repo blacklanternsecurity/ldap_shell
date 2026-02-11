@@ -580,6 +580,9 @@ class ADWSConnect:
 
         create_msg = LDAP_CREATE_FSTRING.format(**create_vars)
 
+        # Debug: Log the SOAP message
+        logging.debug("ADWS Create SOAP message:\n%s", create_msg)
+
         self._nmf.send(create_msg)
         resp_str = self._nmf.recv()
         et = self._handle_str_to_xml(resp_str)

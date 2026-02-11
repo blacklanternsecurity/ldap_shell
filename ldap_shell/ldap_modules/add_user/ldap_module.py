@@ -87,10 +87,7 @@ class LdapShellModule(BaseLdapModule):
             ucd = {
                 'sAMAccountName': self.args.username,
                 'userAccountControl': '512',  # Must be string, not int!
-                'accountExpires': '0',
                 'unicodePwd': f'"{password}"'.encode('utf-16-le'),
-                # Optional descriptive attributes (similar to SharpADWS AddComputer)
-                'displayName': self.args.username,
             }
 
             # Create user object
