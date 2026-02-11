@@ -425,7 +425,11 @@ class ADWSConnection:
                 for attr_name, attr_value in post_create_attrs.items():
                     try:
                         # Determine data type
-                        if isinstance(attr_value, bytes):
+                        # Special case: userAccountControl must be sent as string per SharpADWS
+                        if attr_name == 'userAccountControl':
+                            data_type = 'string'
+                            value_str = str(attr_value)
+                        elif isinstance(attr_value, bytes):
                             # Binary attribute - base64 encode
                             import base64
                             encoded_value = base64.b64encode(attr_value).decode('ascii')
