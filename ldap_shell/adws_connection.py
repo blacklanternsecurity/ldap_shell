@@ -49,15 +49,27 @@ class ADWSEntry:
         return key in self._attributes
 
 
+class ADWSServerInfo:
+    """
+    Mimics ldap3.ServerInfo to provide server information.
+    """
+    def __init__(self, base_dn: str):
+        self.other = {
+            'defaultNamingContext': [base_dn],
+            'configurationNamingContext': [f'CN=Configuration,{base_dn}'],
+            'schemaNamingContext': [f'CN=Schema,CN=Configuration,{base_dn}'],
+        }
+
+
 class ADWSServer:
     """
     Mimics ldap3.Server to provide server information.
     """
 
-    def __init__(self, host: str, port: int = 9389):
+    def __init__(self, host: str, base_dn: str, port: int = 9389):
         self.host = host
         self.port = port
-        self.info = None  # Could populate with server info if needed
+        self.info = ADWSServerInfo(base_dn)
 
 
 class ADWSConnection:
@@ -138,7 +150,7 @@ class ADWSConnection:
         self.base_dn = ','.join([f'DC={part}' for part in domain.split('.')])
 
         # Create server object
-        self.server = ADWSServer(hostname)
+        self.server = ADWSServer(hostname, self.base_dn)
 
         # Connection state
         self.bound = False
