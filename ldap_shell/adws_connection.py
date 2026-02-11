@@ -233,6 +233,16 @@ class ADWSConnection:
         "adminCount",
         "logonCount",
         "badPwdCount",
+        # Policy attributes (for domain policy dump)
+        "lockOutObservationWindow",
+        "lockoutDuration",
+        "lockoutThreshold",
+        "maxPwdAge",
+        "minPwdAge",
+        "minPwdLength",
+        "pwdHistoryLength",
+        "pwdProperties",
+        "ms-DS-MachineAccountQuota",
     }
 
     def __init__(self, hostname: str, domain: str, username: str,
