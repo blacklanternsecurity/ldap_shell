@@ -18,6 +18,25 @@ from impacket.ldap.ldaptypes import LDAP_SID
 log = logging.getLogger('ldap-shell')
 
 
+class ADWSAttribute:
+    """
+    Mimics ldap3.Attribute to provide .value access pattern.
+    """
+    def __init__(self, values):
+        if isinstance(values, list):
+            self.values = values
+            self.value = values[0] if len(values) == 1 else values
+        else:
+            self.values = [values]
+            self.value = values
+
+    def __str__(self):
+        return str(self.value)
+
+    def __repr__(self):
+        return repr(self.value)
+
+
 class ADWSEntry:
     """
     Mimics ldap3.Entry to provide compatibility with ldap_shell modules.
@@ -47,6 +66,21 @@ class ADWSEntry:
     def __contains__(self, key: str) -> bool:
         """Check if attribute exists."""
         return key in self._attributes
+
+    def __getattr__(self, name: str):
+        """
+        Allow ldap3-style attribute access (e.g., entry.objectSid.value).
+        This is called when normal attribute lookup fails.
+        """
+        if name.startswith('_'):
+            # Avoid infinite recursion for private attributes
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        # Check if attribute exists in _attributes
+        if name in self._attributes:
+            return ADWSAttribute(self._attributes[name])
+
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 
 class ADWSStandardExtendedOperations:
