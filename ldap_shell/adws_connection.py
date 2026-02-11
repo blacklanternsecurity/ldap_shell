@@ -336,12 +336,15 @@ class ADWSConnection:
             # Kerberos authentication
             self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm,
                                      password=password, nt_hash=nt_hash)
+            self.authentication = 'SASL'  # Kerberos uses SASL
         elif nt_hash:
             # NTLM with hash
             self._auth = NTLMAuth(hashes=nt_hash)
+            self.authentication = 'NTLM'
         elif password:
             # NTLM with password
             self._auth = NTLMAuth(password=password)
+            self.authentication = 'NTLM'
         else:
             raise ValueError("Either password, nt_hash, or tgt must be provided")
 
