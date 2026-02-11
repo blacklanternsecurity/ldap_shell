@@ -404,6 +404,21 @@ class NNS:
                 os.environ['KRB5CCNAME'] = temp_ccache
                 logging.debug(f"Set KRB5CCNAME to temporary ccache: {temp_ccache}")
 
+                # Debug: List credentials in the ccache
+                import subprocess
+                try:
+                    klist_output = subprocess.run(
+                        ['klist', '-c', temp_ccache],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    logging.debug(f"klist output:\n{klist_output.stdout}")
+                    if klist_output.stderr:
+                        logging.debug(f"klist stderr:\n{klist_output.stderr}")
+                except Exception as e:
+                    logging.debug(f"Failed to run klist: {e}")
+
             # Create SPNEGO client context for Kerberos authentication
             # The hostname should be the FQDN of the DC for proper SPN resolution
             logging.debug(f"Creating SPNEGO client for {self._username}@{self._domain.upper()} -> {self._fqdn}")
