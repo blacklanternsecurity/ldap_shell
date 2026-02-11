@@ -573,18 +573,28 @@ class NNS:
                 self._sequence = 0
 
                 # Set up encryption keys for NNS channel
-                # Use the Kerberos session key for signing and sealing
+                # MS-NNS uses the same encryption mechanism for both NTLM and Kerberos
+                # Only the source of the session key differs
                 self._flags = (
                     impacket.ntlm.NTLMSSP_NEGOTIATE_SIGN |
                     impacket.ntlm.NTLMSSP_NEGOTIATE_SEAL |
                     impacket.ntlm.NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY
                 )
 
-                # Derive encryption keys from session key
-                self._client_signing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
-                self._server_signing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
-                self._client_sealing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
-                self._server_sealing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
+                # Derive encryption keys from Kerberos session key using NTLM key derivation
+                # This is the same process used for NTLM with extended session security
+                self._client_signing_key = impacket.ntlm.SIGNKEY(
+                    self._flags, self._session_key
+                )
+                self._server_signing_key = impacket.ntlm.SIGNKEY(
+                    self._flags, self._session_key, "Server"
+                )
+                self._client_sealing_key = impacket.ntlm.SEALKEY(
+                    self._flags, self._session_key
+                )
+                self._server_sealing_key = impacket.ntlm.SEALKEY(
+                    self._flags, self._session_key, "Server"
+                )
 
                 # Initialize RC4 ciphers for NNS encryption
                 cipher_client = ARC4.new(self._client_sealing_key)
@@ -592,7 +602,7 @@ class NNS:
                 cipher_server = ARC4.new(self._server_sealing_key)
                 self._server_sealing_handle = cipher_server.encrypt
 
-                logging.debug("NNS encryption initialized with Kerberos session key")
+                logging.debug("NNS encryption initialized with Kerberos session key using NTLM key derivation")
 
             except Exception as e:
                 logging.error(f"Failed to extract session key from pyspnego: {e}")
