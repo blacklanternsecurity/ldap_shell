@@ -365,13 +365,13 @@ class NNS:
 
         # Get or request TGS for the ADWS service
         if self._tgs is None:
-            # Request a TGS for the ADWS service principal
+            # ADWS uses the HOST service principal of the DC
             server_name = Principal(
-                f'ADWS/{self._fqdn}',
+                f'HOST/{self._fqdn}',
                 type=constants.PrincipalNameType.NT_SRV_INST.value
             )
 
-            logging.debug(f'Requesting TGS for service: ADWS/{self._fqdn}')
+            logging.debug(f'Requesting TGS for HOST service: HOST/{self._fqdn}')
 
             try:
                 tgs, cipher, _, session_key = getKerberosTGS(
@@ -383,7 +383,7 @@ class NNS:
                     self._tgt['sessionKey']
                 )
             except Exception as e:
-                logging.error(f'Failed to get TGS for ADWS service: {e}')
+                logging.error(f'Failed to get TGS for HOST service: {e}')
                 raise
         else:
             tgs = self._tgs['KDC_REP']

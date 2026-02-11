@@ -276,8 +276,8 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
 
         log.debug('Using Kerberos cache %s', os.getenv('KRB5CCNAME'))
 
-        # Try to get TGS for ADWS service
-        principal = f'ADWS/{kdc_host.upper()}@{domain.upper()}'
+        # Try to get TGS for HOST service (used by ADWS)
+        principal = f'HOST/{kdc_host.upper()}@{domain.upper()}'
         creds = ccache.getCredential(principal)
 
         if creds is None:
@@ -320,11 +320,12 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
 
     # Get TGS for ADWS service if we don't have one
     if TGS is None:
+        # ADWS uses the HOST SPN of the domain controller
         server_name = Principal(
-            f'ADWS/{kdc_host}',
+            f'HOST/{kdc_host}',
             type=constants.PrincipalNameType.NT_SRV_INST.value
         )
-        log.debug(f'Requesting TGS for ADWS service: ADWS/{kdc_host}')
+        log.debug(f'Requesting TGS for HOST service: HOST/{kdc_host}')
 
         tgs, cipher, old_session_key, session_key = getKerberosTGS(
             server_name, domain, kdc_host, tgt, cipher, session_key
