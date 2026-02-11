@@ -410,12 +410,13 @@ class NNS:
 
             # Build the client context
             # pyspnego will handle the GSSAPI/SSPI calls to get Kerberos tickets
-            # If we set KRB5CCNAME above, it will use that ccache
-            # If password is provided, it will authenticate with password
-            # Otherwise, it will use the system's default ccache
+            # If we created a temp ccache above, use it without password (GSSAPI will read from ccache)
+            # If we didn't create a temp ccache, use password (pyspnego will get tickets directly)
+            use_password = self._password if temp_ccache is None else None
+
             client = spnego.client(
                 username=f"{self._username}@{self._domain.upper()}",
-                password=self._password if self._password else None,
+                password=use_password,
                 hostname=self._fqdn,
                 service="HOST",  # ADWS uses the HOST service principal
                 protocol="kerberos",  # Force Kerberos (don't fall back to NTLM)
