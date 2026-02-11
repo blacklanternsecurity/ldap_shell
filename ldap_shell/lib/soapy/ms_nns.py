@@ -391,10 +391,13 @@ class NNS:
             session_key = self._tgs['sessionKey']
 
         # Build SPNEGO NegTokenInit with Kerberos AP_REQ
+        # Note: We must offer multiple mechanisms for proper SPNEGO negotiation,
+        # even though we're providing a Kerberos token. The server expects this.
         blob = impacket.spnego.SPNEGO_NegTokenInit()
         blob['MechTypes'] = [
             impacket.spnego.TypesMech["MS KRB5 - Microsoft Kerberos 5"],
             impacket.spnego.TypesMech["KRB5 - Kerberos 5"],
+            impacket.spnego.TypesMech["NTLMSSP - Microsoft NTLM Security Support Provider"],
         ]
 
         # Extract the ticket from the TGS
