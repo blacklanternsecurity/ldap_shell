@@ -418,7 +418,8 @@ class NNS:
         # Build authenticator
         authenticator = Authenticator()
         authenticator['authenticator-vno'] = 5
-        authenticator['crealm'] = self._domain
+        # IMPORTANT: Kerberos realms must be uppercase!
+        authenticator['crealm'] = self._domain.upper()
 
         user_name = Principal(
             self._username,
