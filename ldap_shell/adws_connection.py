@@ -373,17 +373,19 @@ class ADWSConnection:
             return False
 
         # Attributes that are auto-generated and should not be set during Create
-        # Based on SharpADWS, userAccountControl and unicodePwd CAN be set during Create
         AUTO_GENERATED_ATTRIBUTES = {
             'name',  # Auto-generated from CN
             'distinguishedName',  # Handled via container-hierarchy-parent and RDN
             'objectCategory',  # Often auto-generated, can cause conflicts
         }
 
-        # Most attributes that might seem restricted can actually be set during Create.
-        # Only truly problematic attributes should be in POST_CREATE_ATTRIBUTES.
-        # Based on SharpADWS AddComputer.cs, userAccountControl and unicodePwd work fine.
-        POST_CREATE_ATTRIBUTES = set()  # Keep empty for now, add only if errors occur
+        # Attributes that CANNOT be set during user Create (must use Put after creation)
+        # Note: SharpADWS AddComputer sets userAccountControl on COMPUTERS successfully,
+        # but USERS have stricter restrictions during Create.
+        POST_CREATE_ATTRIBUTES = {
+            'userAccountControl',  # Cannot set during user Create
+            'unicodePwd',  # Cannot set during user Create (password)
+        }
 
         # Split attributes
         create_attrs = {}
