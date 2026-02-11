@@ -108,6 +108,8 @@ class ADWSServer:
         self.host = host
         self.port = port
         self.info = ADWSServerInfo(base_dn)
+        # SSL compatibility - ADWS has built-in encryption
+        self.ssl = True
 
 
 class ADWSConnection:
@@ -195,6 +197,10 @@ class ADWSConnection:
         self.closed = False
         self.entries = []
         self.result = {'result': -1, 'description': 'Not connected', 'message': ''}
+
+        # TLS compatibility - ADWS has built-in encryption via MS-NNS
+        # Pretend TLS is already started so modules don't try to call start_tls()
+        self.tls_started = True
 
         # ADWS clients (will be created on connect)
         self._pull_client: Optional[ADWSConnect] = None
