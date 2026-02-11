@@ -505,6 +505,14 @@ class NNS:
                 else:
                     raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
 
+            # Process server's mutual authentication response if present
+            # The server may send DONE with an AP-REP token that we need to process
+            if NNS_msg_resp["message_id"] == MessageID.DONE and len(NNS_msg_resp["payload"]) > 0:
+                logging.debug(f"Server sent DONE with mutual auth token ({len(NNS_msg_resp['payload'])} bytes)")
+                # Process the AP-REP for mutual authentication
+                client.step(NNS_msg_resp["payload"])
+                logging.debug("Processed server's mutual authentication token")
+
             # Continue authentication handshake if server sent more data
             while not client.complete and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
                 in_token = NNS_msg_resp["payload"]
@@ -546,9 +554,10 @@ class NNS:
                     break
 
             if not client.complete:
+                logging.error(f"Kerberos authentication incomplete: client.complete={client.complete}, message_id=0x{NNS_msg_resp['message_id']:02x}")
                 raise ValueError("Kerberos authentication did not complete successfully")
 
-            logging.debug("Kerberos authentication handshake completed")
+            logging.debug("Kerberos authentication handshake completed successfully")
 
             # Extract the session key from pyspnego for NNS channel encryption
             try:
