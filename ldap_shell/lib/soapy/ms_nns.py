@@ -374,13 +374,39 @@ class NNS:
         logging.debug("Attempting Kerberos authentication to ADWS using pyspnego")
 
         temp_ccache = None
+        temp_krb5conf = None
         original_krb5ccname = os.environ.get('KRB5CCNAME')
+        original_krb5_config = os.environ.get('KRB5_CONFIG')
 
         try:
             # If we have TGT/TGS from impacket, write them to a temporary ccache
             # so pyspnego can read them via GSSAPI
             if self._tgt is not None:
                 logging.debug("Writing TGT/TGS to temporary ccache for pyspnego")
+
+                # Create a temporary krb5.conf to configure GSSAPI properly
+                temp_fd, temp_krb5conf = tempfile.mkstemp(prefix='krb5_', suffix='.conf')
+                krb5conf_content = f"""[libdefaults]
+    default_realm = {self._domain.upper()}
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    rdns = false
+    dns_canonicalize_hostname = false
+
+[realms]
+    {self._domain.upper()} = {{
+        kdc = {self._fqdn}
+        admin_server = {self._fqdn}
+    }}
+
+[domain_realm]
+    .{self._domain.lower()} = {self._domain.upper()}
+    {self._domain.lower()} = {self._domain.upper()}
+"""
+                os.write(temp_fd, krb5conf_content.encode('utf-8'))
+                os.close(temp_fd)
+                os.environ['KRB5_CONFIG'] = temp_krb5conf
+                logging.debug(f"Created temporary krb5.conf: {temp_krb5conf}")
 
                 # Create a temporary ccache file
                 temp_fd, temp_ccache = tempfile.mkstemp(prefix='krb5cc_ldapshell_', suffix='.ccache')
@@ -570,7 +596,7 @@ class NNS:
             logging.debug("Exception details:", exc_info=True)
             raise
         finally:
-            # Clean up temporary ccache and restore original KRB5CCNAME
+            # Clean up temporary files and restore environment
             if temp_ccache is not None:
                 try:
                     os.unlink(temp_ccache)
@@ -585,3 +611,18 @@ class NNS:
                 elif 'KRB5CCNAME' in os.environ:
                     del os.environ['KRB5CCNAME']
                     logging.debug("Removed temporary KRB5CCNAME from environment")
+
+            if temp_krb5conf is not None:
+                try:
+                    os.unlink(temp_krb5conf)
+                    logging.debug(f"Deleted temporary krb5.conf: {temp_krb5conf}")
+                except Exception as e:
+                    logging.warning(f"Failed to delete temporary krb5.conf {temp_krb5conf}: {e}")
+
+                # Restore original KRB5_CONFIG
+                if original_krb5_config is not None:
+                    os.environ['KRB5_CONFIG'] = original_krb5_config
+                    logging.debug(f"Restored KRB5_CONFIG to: {original_krb5_config}")
+                elif 'KRB5_CONFIG' in os.environ:
+                    del os.environ['KRB5_CONFIG']
+                    logging.debug("Removed temporary KRB5_CONFIG from environment")
