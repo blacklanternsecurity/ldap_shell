@@ -363,8 +363,12 @@ class ADWSConnect:
 
     def _pull_results(
         self, remoteName: str, nmf: ms_nmf.NMFConnection, enum_ctx: str
-    ) -> tuple[ElementTree.Element, bool]:
-        """Pull the results of an enumeration ctx from server."""
+    ) -> tuple[ElementTree.Element, str | None, bool]:
+        """Pull the results of an enumeration ctx from server.
+
+        Returns:
+            Tuple of (ElementTree, new_enum_ctx, more_results)
+        """
         pull_vars = {
             "uuid": str(uuid4()),
             "fqdn": remoteName,
@@ -379,11 +383,16 @@ class ADWSConnect:
         if not et:
             raise ValueError("was unable to parse xml from the server response")
 
+        # Check if this is the last batch
         final_pkt = et.find(".//wsen:EndOfSequence", namespaces=NAMESPACES)
         if final_pkt is not None:
-            return (et, False)
+            return (et, None, False)
 
-        return (et, True)
+        # Get the new enumeration context for the next pull
+        new_enum_ctx = et.find(".//wsen:EnumerationContext", NAMESPACES)
+        new_ctx_value = new_enum_ctx.text if new_enum_ctx is not None else None
+
+        return (et, new_ctx_value, True)
 
     def _handle_str_to_xml(self, xmlstr: str) -> ElementTree.Element | None:
         """Takes an xml string and returns an Element of the root node."""
@@ -493,7 +502,7 @@ class ADWSConnect:
         results: ElementTree.Element = ElementTree.Element("wsen:Items")
         more_results = True
         while more_results:
-            et, more_results = self._pull_results(
+            et, new_enum_ctx, more_results = self._pull_results(
                 remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
             )
             if len(et.findall(".//wsen:Items", namespaces=NAMESPACES)) == 0:
@@ -501,6 +510,13 @@ class ADWSConnect:
             else:
                 for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
                     results.append(item)
+
+            # Update enumeration context for next iteration
+            if more_results and new_enum_ctx:
+                enum_ctx = new_enum_ctx
+            elif more_results and not new_enum_ctx:
+                logging.warning("Server indicated more results but did not provide new enumeration context")
+                more_results = False
 
         return results
 
