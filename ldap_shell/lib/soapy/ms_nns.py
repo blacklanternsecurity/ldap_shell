@@ -17,7 +17,7 @@ import impacket.structure
 from Cryptodome.Cipher import ARC4
 from impacket.hresult_errors import ERROR_MESSAGES
 from impacket.krb5 import constants
-from impacket.krb5.asn1 import AP_REQ, Authenticator, TGS_REP, seq_set
+from impacket.krb5.asn1 import AP_REQ, AP_REP, Authenticator, EncAPRepPart, TGS_REP, seq_set
 from impacket.krb5.crypto import Key, _enctype_table
 from impacket.krb5.types import Principal, KerberosTime, Ticket
 from impacket.krb5.kerberosv5 import getKerberosTGS
@@ -407,7 +407,8 @@ class NNS:
         ap_req['pvno'] = 5
         ap_req['msg-type'] = int(constants.ApplicationTagNumbers.AP_REQ.value)
 
-        opts = []
+        # Request mutual authentication (required by Windows/ADWS)
+        opts = [constants.APOptions.mutual_required.value]
         ap_req['ap-options'] = constants.encodeFlags(opts)
         seq_set(ap_req, 'ticket', ticket.to_asn1)
 
@@ -462,6 +463,7 @@ class NNS:
             logging.debug(f"Response payload (hex): {NNS_msg_resp['payload'].hex()}")
 
         # Try to parse SPNEGO response if present
+        ap_rep_verified = False
         if len(NNS_msg_resp['payload']) > 0 and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
             try:
                 spnego_resp = impacket.spnego.SPNEGO_NegTokenResp(NNS_msg_resp['payload'])
@@ -469,6 +471,28 @@ class NNS:
                 if 'NegResult' in spnego_resp.fields:
                     neg_result = spnego_resp['NegResult']
                     logging.debug(f"SPNEGO NegResult: {neg_result}")
+
+                # Extract and verify AP_REP if present
+                if 'ResponseToken' in spnego_resp.fields and spnego_resp['ResponseToken']:
+                    logging.debug("AP_REP found in response, verifying...")
+                    try:
+                        ap_rep = decoder.decode(spnego_resp['ResponseToken'], asn1Spec=AP_REP())[0]
+
+                        # Decrypt the encrypted part of AP_REP with session key (Key Usage 12)
+                        enc_part = ap_rep['enc-part']
+                        cipher_text = bytes(enc_part['cipher'])
+
+                        # Decrypt using session key with key usage 12 (for AP_REP)
+                        plain_text = cipher.decrypt(session_key, 12, cipher_text)
+                        enc_ap_rep_part = decoder.decode(plain_text, asn1Spec=EncAPRepPart())[0]
+
+                        logging.debug(f"AP_REP verified successfully")
+                        ap_rep_verified = True
+
+                    except Exception as e:
+                        logging.warning(f"Failed to verify AP_REP: {e}")
+                        # Continue anyway - some servers might not send valid AP_REP
+
             except Exception as e:
                 logging.debug(f"Could not parse as SPNEGO token: {e}")
 
