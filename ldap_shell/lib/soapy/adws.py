@@ -543,7 +543,16 @@ class ADWSConnect:
                 # String attribute
                 if attr_value is None or (isinstance(attr_value, str) and not attr_value):
                     continue  # Skip empty strings
-                values_xml.append(f'<ad:value xsi:type="xsd:string">{attr_value}</ad:value>')
+
+                # CRITICAL FIX: If the string value looks like a number (e.g., "512"),
+                # the NMF binary encoder will encode it as Int16TextRecord instead of
+                # Chars8TextRecord, which causes ADWS to reject it since xsi:type says "string".
+                # Workaround: Add a trailing space to force string encoding (AD will trim it).
+                value_str = attr_value
+                if isinstance(attr_value, str) and attr_value.isdigit():
+                    value_str = attr_value + ' '  # Force Chars8TextRecord encoding
+
+                values_xml.append(f'<ad:value xsi:type="xsd:string">{value_str}</ad:value>')
 
             # Skip if no values were added
             if not values_xml:
