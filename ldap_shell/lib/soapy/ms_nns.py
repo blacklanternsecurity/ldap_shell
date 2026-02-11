@@ -594,15 +594,22 @@ class NNS:
 
             logging.debug("Kerberos authentication handshake completed successfully")
 
-            # Extract the session key from pyspnego for NNS channel encryption
+            # Extract the session key for NNS channel encryption
+            # Use the Kerberos TGS session key, not the GSSAPI session key
+            # MS-NNS expects the actual Kerberos session key from the ticket
             try:
-                session_key_bytes = client.session_key
-                if not session_key_bytes:
-                    logging.warning("No session key available from pyspnego, using fallback")
-                    # Fallback: try to use a derived key (may not work)
-                    session_key_bytes = b'\x00' * 16
+                if self._tgs is not None and 'sessionKey' in self._tgs:
+                    # Use the session key from the TGS
+                    session_key_bytes = self._tgs['sessionKey'].contents
+                    logging.debug(f"Using TGS session key ({len(session_key_bytes)} bytes)")
                 else:
-                    logging.debug(f"Extracted session key ({len(session_key_bytes)} bytes)")
+                    # Fallback to pyspnego session key
+                    session_key_bytes = client.session_key
+                    if not session_key_bytes:
+                        logging.warning("No session key available, using fallback")
+                        session_key_bytes = b'\x00' * 16
+                    else:
+                        logging.debug(f"Using pyspnego session key ({len(session_key_bytes)} bytes)")
 
                 self._session_key = session_key_bytes
                 self._sequence = 0
