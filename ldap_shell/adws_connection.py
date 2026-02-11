@@ -135,15 +135,40 @@ class ADWSStandardExtendedOperations:
         self._connection = connection
 
     def paged_search(self, search_base: str, search_filter: str,
+                    search_scope: Optional[str] = None,
                     attributes: Optional[List[str]] = None,
                     paged_size: int = 500, generator: bool = False):
         """
         Perform paged search using ADWS.
 
         Note: ADWS handles paging automatically, so we just perform a normal search.
+        The search_scope parameter is accepted for compatibility but not used (ADWS always uses subtree).
         """
         self._connection.search(search_base, search_filter, attributes=attributes)
-        # Return None as ldapdomaindump doesn't use the return value for paged_search with generator=False
+
+        # If generator=True, yield entries in the format expected by ldap3
+        if generator:
+            for entry in self._connection.entries:
+                # Convert ADWSEntry to ldap3-style dict format for generator mode
+                attributes_dict = {}
+                for attr in entry._attributes:
+                    attr_obj = entry[attr]
+                    # Get values list from ADWSAttribute
+                    if hasattr(attr_obj, 'values'):
+                        # Filter out None values
+                        values = [v for v in attr_obj.values if v is not None]
+                        if values:  # Only include non-empty attributes
+                            attributes_dict[attr] = values
+                    elif attr_obj.value is not None:
+                        attributes_dict[attr] = [attr_obj.value]
+
+                yield {
+                    'type': 'searchResEntry',
+                    'dn': entry.entry_dn,
+                    'attributes': attributes_dict
+                }
+
+        # Return None for non-generator mode (ldapdomaindump compatibility)
         return None
 
     def who_am_i(self) -> str:
