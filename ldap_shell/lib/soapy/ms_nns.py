@@ -359,221 +359,160 @@ class NNS:
             raise SystemExit(f"[-] NTLM Auth Failed with error {err_type} {err_msg}")
 
     def auth_kerberos(self) -> None:
-        """Authenticate to the dest with Kerberos authentication"""
+        """Authenticate to the dest with Kerberos authentication using pyspnego"""
+        try:
+            import spnego
+            from spnego import NegotiateOptions
+        except ImportError:
+            logging.error("pyspnego library not installed. Install with: pip install pyspnego[kerberos]")
+            raise SystemExit("[-] pyspnego library required for Kerberos authentication")
 
-        logging.debug("Attempting Kerberos authentication to ADWS")
+        logging.debug("Attempting Kerberos authentication to ADWS using pyspnego")
 
-        # Get or request TGS for the ADWS service
-        if self._tgs is None:
-            # ADWS uses the HOST service principal of the DC
-            server_name = Principal(
-                f'HOST/{self._fqdn}',
-                type=constants.PrincipalNameType.NT_SRV_INST.value
+        try:
+            # Create SPNEGO client context for Kerberos authentication
+            # The hostname should be the FQDN of the DC for proper SPN resolution
+            logging.debug(f"Creating SPNEGO client for {self._username}@{self._domain.upper()} -> {self._fqdn}")
+
+            # Build the client context
+            # pyspnego will handle the GSSAPI/SSPI calls to get Kerberos tickets
+            client = spnego.client(
+                username=f"{self._username}@{self._domain.upper()}",
+                password=self._password if self._password else None,
+                hostname=self._fqdn,
+                service="HOST",  # ADWS uses the HOST service principal
+                protocol="kerberos",  # Force Kerberos (don't fall back to NTLM)
+                options=NegotiateOptions.use_gssapi,  # Use GSSAPI on Linux, SSPI on Windows
             )
 
-            logging.debug(f'Requesting TGS for HOST service: HOST/{self._fqdn}')
+            logging.debug("SPNEGO client created, generating initial token")
 
-            try:
-                tgs, cipher, _, session_key = getKerberosTGS(
-                    server_name,
-                    self._domain,
-                    self._fqdn,
-                    self._tgt['KDC_REP'],
-                    self._tgt['cipher'],
-                    self._tgt['sessionKey']
-                )
-            except Exception as e:
-                logging.error(f'Failed to get TGS for HOST service: {e}')
-                raise
-        else:
-            tgs = self._tgs['KDC_REP']
-            cipher = self._tgs['cipher']
-            session_key = self._tgs['sessionKey']
+            # Generate the initial authentication token
+            out_token = client.step()
 
-        # Build SPNEGO NegTokenInit with Kerberos AP_REQ
-        # Note: We must offer multiple mechanisms for proper SPNEGO negotiation,
-        # even though we're providing a Kerberos token. The server expects this.
-        blob = impacket.spnego.SPNEGO_NegTokenInit()
-        blob['MechTypes'] = [
-            impacket.spnego.TypesMech["MS KRB5 - Microsoft Kerberos 5"],
-            impacket.spnego.TypesMech["KRB5 - Kerberos 5"],
-            impacket.spnego.TypesMech["NTLMSSP - Microsoft NTLM Security Support Provider"],
-        ]
+            if not out_token:
+                raise ValueError("pyspnego failed to generate initial Kerberos token")
 
-        # Extract the ticket from the TGS
-        tgs_decoded = decoder.decode(tgs, asn1Spec=TGS_REP())[0]
-        ticket = Ticket()
-        ticket.from_asn1(tgs_decoded['ticket'])
+            logging.debug(f"Generated Kerberos token ({len(out_token)} bytes)")
 
-        # Build the AP_REQ
-        ap_req = AP_REQ()
-        ap_req['pvno'] = 5
-        ap_req['msg-type'] = int(constants.ApplicationTagNumbers.AP_REQ.value)
-
-        # Request mutual authentication (required by Windows/ADWS)
-        opts = [constants.APOptions.mutual_required.value]
-        ap_req['ap-options'] = constants.encodeFlags(opts)
-        seq_set(ap_req, 'ticket', ticket.to_asn1)
-
-        # Build authenticator
-        authenticator = Authenticator()
-        authenticator['authenticator-vno'] = 5
-        # IMPORTANT: Kerberos realms must be uppercase!
-        authenticator['crealm'] = self._domain.upper()
-
-        user_name = Principal(
-            self._username,
-            type=constants.PrincipalNameType.NT_PRINCIPAL.value
-        )
-        seq_set(authenticator, 'cname', user_name.components_to_asn1)
-
-        now = datetime.datetime.utcnow()
-        authenticator['cusec'] = now.microsecond
-        authenticator['ctime'] = KerberosTime.to_asn1(now)
-
-        encoded_authenticator = encoder.encode(authenticator)
-
-        # Encrypt authenticator with session key (Key Usage 11)
-        encrypted_encoded_authenticator = cipher.encrypt(
-            session_key, 11, encoded_authenticator, None
-        )
-
-        ap_req['authenticator'] = noValue
-        ap_req['authenticator']['etype'] = cipher.enctype
-        ap_req['authenticator']['cipher'] = encrypted_encoded_authenticator
-
-        blob['MechToken'] = encoder.encode(ap_req)
-
-        # Send the Kerberos AP_REQ in NNS handshake
-        logging.debug("Sending Kerberos AP_REQ")
-        NNS_handshake(
-            message_id=MessageID.IN_PROGRESS,
-            major_version=1,
-            minor_version=0,
-            payload=blob.getData(),
-        ).send(self._sock)
-
-        # Receive server response
-        NNS_msg_resp = NNS_handshake(
-            message_id=int.from_bytes(self._sock.recv(1), "big"),
-            major_version=int.from_bytes(self._sock.recv(1), "big"),
-            minor_version=int.from_bytes(self._sock.recv(1), "big"),
-            payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
-        )
-
-        logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
-        logging.debug(f"Response payload length: {len(NNS_msg_resp['payload'])} bytes")
-        if len(NNS_msg_resp['payload']) > 0:
-            logging.debug(f"Response payload (hex): {NNS_msg_resp['payload'].hex()}")
-
-        # Try to parse SPNEGO response if present
-        ap_rep_verified = False
-        if len(NNS_msg_resp['payload']) > 0 and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
-            try:
-                spnego_resp = impacket.spnego.SPNEGO_NegTokenResp(NNS_msg_resp['payload'])
-                logging.debug(f"SPNEGO NegTokenResp parsed successfully")
-                if 'NegResult' in spnego_resp.fields:
-                    neg_result = spnego_resp['NegResult']
-                    logging.debug(f"SPNEGO NegResult: {neg_result}")
-
-                # Extract and verify AP_REP if present
-                if 'ResponseToken' in spnego_resp.fields and spnego_resp['ResponseToken']:
-                    logging.debug("AP_REP found in response, verifying...")
-                    try:
-                        ap_rep = decoder.decode(spnego_resp['ResponseToken'], asn1Spec=AP_REP())[0]
-
-                        # Decrypt the encrypted part of AP_REP with session key (Key Usage 12)
-                        enc_part = ap_rep['enc-part']
-                        cipher_text = bytes(enc_part['cipher'])
-
-                        # Decrypt using session key with key usage 12 (for AP_REP)
-                        plain_text = cipher.decrypt(session_key, 12, cipher_text)
-                        enc_ap_rep_part = decoder.decode(plain_text, asn1Spec=EncAPRepPart())[0]
-
-                        logging.debug(f"AP_REP verified successfully")
-                        ap_rep_verified = True
-
-                    except Exception as e:
-                        logging.warning(f"Failed to verify AP_REP: {e}")
-                        # Continue anyway - some servers might not send valid AP_REP
-
-            except Exception as e:
-                logging.debug(f"Could not parse as SPNEGO token: {e}")
-
-        # Check for errors
-        if NNS_msg_resp["message_id"] == MessageID.ERROR:
-            err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
-            logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
-            if err_code in ERROR_MESSAGES:
-                err_type, err_msg = ERROR_MESSAGES[err_code]
-                raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
-            else:
-                # Try to interpret as HRESULT or Windows error code
-                raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
-
-        # For Kerberos, we need to set up the session key for encryption
-        # Use the Kerberos session key for NNS encryption
-        self._session_key = session_key
-        self._sequence = 0
-
-        # Set up Kerberos-based encryption keys
-        # Note: Kerberos uses different key derivation than NTLM
-        # For now, we'll use the session key directly
-        # This may need adjustment based on actual ADWS Kerberos implementation
-        self._flags = (
-            impacket.ntlm.NTLMSSP_NEGOTIATE_SIGN |
-            impacket.ntlm.NTLMSSP_NEGOTIATE_SEAL |
-            impacket.ntlm.NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY
-        )
-
-        # Use Kerberos session key for signing and sealing
-        self._client_signing_key = session_key[:16] if len(session_key) >= 16 else session_key
-        self._server_signing_key = session_key[:16] if len(session_key) >= 16 else session_key
-        self._client_sealing_key = session_key[:16] if len(session_key) >= 16 else session_key
-        self._server_sealing_key = session_key[:16] if len(session_key) >= 16 else session_key
-
-        # Initialize RC4 ciphers
-        cipher_client = ARC4.new(self._client_sealing_key)
-        self._client_sealing_handle = cipher_client.encrypt
-        cipher_server = ARC4.new(self._server_sealing_key)
-        self._server_sealing_handle = cipher_server.encrypt
-
-        # Parse the server's response to see if we need to send more data
-        # For Kerberos, the server might send an AP_REP or just accept
-        if NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
-            # Server sent more data (possibly AP_REP), send final acknowledgment
-            logging.debug("Server sent IN_PROGRESS, sending final acknowledgment")
-
-            c_NegTokenTarg = impacket.spnego.SPNEGO_NegTokenResp()
-            c_NegTokenTarg['NegResult'] = b'\x00'  # Accept completed
-
+            # Send the initial token via NNS handshake
             NNS_handshake(
                 message_id=MessageID.IN_PROGRESS,
                 major_version=1,
                 minor_version=0,
-                payload=c_NegTokenTarg.getData(),
+                payload=out_token,
             ).send(self._sock)
 
-            # Check for final success
-            NNS_msg_done = NNS_handshake(
+            logging.debug("Sent initial Kerberos token to server")
+
+            # Receive server response
+            NNS_msg_resp = NNS_handshake(
                 message_id=int.from_bytes(self._sock.recv(1), "big"),
                 major_version=int.from_bytes(self._sock.recv(1), "big"),
                 minor_version=int.from_bytes(self._sock.recv(1), "big"),
                 payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
             )
 
-            logging.debug(f"Final message_id: 0x{NNS_msg_done['message_id']:02x}")
+            logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
+            logging.debug(f"Response payload length: {len(NNS_msg_resp['payload'])} bytes")
 
-            if NNS_msg_done["message_id"] == MessageID.ERROR:
-                err_code = int.from_bytes(NNS_msg_done["payload"], "big")
+            # Check for errors
+            if NNS_msg_resp["message_id"] == MessageID.ERROR:
+                err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
+                logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
                 if err_code in ERROR_MESSAGES:
                     err_type, err_msg = ERROR_MESSAGES[err_code]
-                    raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error {err_type} {err_msg}")
+                    raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
                 else:
-                    raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error code {err_code}")
-        elif NNS_msg_resp["message_id"] == MessageID.DONE:
-            logging.debug("Server accepted authentication immediately")
-        else:
-            logging.warning(f"Unexpected message_id: 0x{NNS_msg_resp['message_id']:02x}")
+                    raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
 
-        logging.debug("Kerberos authentication successful")
+            # Continue authentication handshake if server sent more data
+            while not client.complete and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
+                in_token = NNS_msg_resp["payload"]
+                logging.debug(f"Processing server token ({len(in_token)} bytes)")
+
+                # Process server's response and generate next token
+                out_token = client.step(in_token)
+
+                if out_token:
+                    logging.debug(f"Sending response token ({len(out_token)} bytes)")
+                    NNS_handshake(
+                        message_id=MessageID.IN_PROGRESS,
+                        major_version=1,
+                        minor_version=0,
+                        payload=out_token,
+                    ).send(self._sock)
+
+                    # Receive next response
+                    NNS_msg_resp = NNS_handshake(
+                        message_id=int.from_bytes(self._sock.recv(1), "big"),
+                        major_version=int.from_bytes(self._sock.recv(1), "big"),
+                        minor_version=int.from_bytes(self._sock.recv(1), "big"),
+                        payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
+                    )
+
+                    logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
+
+                    # Check for errors
+                    if NNS_msg_resp["message_id"] == MessageID.ERROR:
+                        err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
+                        logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
+                        if err_code in ERROR_MESSAGES:
+                            err_type, err_msg = ERROR_MESSAGES[err_code]
+                            raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
+                        else:
+                            raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
+                else:
+                    # No more tokens to send, authentication should be complete
+                    break
+
+            if not client.complete:
+                raise ValueError("Kerberos authentication did not complete successfully")
+
+            logging.debug("Kerberos authentication handshake completed")
+
+            # Extract the session key from pyspnego for NNS channel encryption
+            try:
+                session_key_bytes = client.session_key
+                if not session_key_bytes:
+                    logging.warning("No session key available from pyspnego, using fallback")
+                    # Fallback: try to use a derived key (may not work)
+                    session_key_bytes = b'\x00' * 16
+                else:
+                    logging.debug(f"Extracted session key ({len(session_key_bytes)} bytes)")
+
+                self._session_key = session_key_bytes
+                self._sequence = 0
+
+                # Set up encryption keys for NNS channel
+                # Use the Kerberos session key for signing and sealing
+                self._flags = (
+                    impacket.ntlm.NTLMSSP_NEGOTIATE_SIGN |
+                    impacket.ntlm.NTLMSSP_NEGOTIATE_SEAL |
+                    impacket.ntlm.NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY
+                )
+
+                # Derive encryption keys from session key
+                self._client_signing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
+                self._server_signing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
+                self._client_sealing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
+                self._server_sealing_key = session_key_bytes[:16] if len(session_key_bytes) >= 16 else session_key_bytes
+
+                # Initialize RC4 ciphers for NNS encryption
+                cipher_client = ARC4.new(self._client_sealing_key)
+                self._client_sealing_handle = cipher_client.encrypt
+                cipher_server = ARC4.new(self._server_sealing_key)
+                self._server_sealing_handle = cipher_server.encrypt
+
+                logging.debug("NNS encryption initialized with Kerberos session key")
+
+            except Exception as e:
+                logging.error(f"Failed to extract session key from pyspnego: {e}")
+                raise
+
+            logging.debug("Kerberos authentication successful via pyspnego")
+
+        except Exception as e:
+            logging.error(f"Kerberos authentication failed: {e}")
+            logging.debug("Exception details:", exc_info=True)
+            raise
