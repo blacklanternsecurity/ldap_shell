@@ -432,7 +432,7 @@ class ADWSConnection:
                             data_type = 'base64Binary'
                             value_str = encoded_value
                         elif isinstance(attr_value, int):
-                            data_type = 'integer'
+                            data_type = 'int'  # Use 'int' not 'integer' per ADValueSerializer.cs
                             value_str = str(attr_value)
                         else:
                             data_type = 'string'
