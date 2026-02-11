@@ -22,7 +22,8 @@ class ADWSAttribute:
     """
     Mimics ldap3.Attribute to provide .value access pattern.
     """
-    def __init__(self, values):
+    def __init__(self, key, values):
+        self.key = key  # Attribute name
         if isinstance(values, list):
             self.values = values
             self.value = values[0] if len(values) == 1 else values
@@ -60,8 +61,10 @@ class ADWSEntry:
         return result
 
     def __getitem__(self, key: str):
-        """Allow dictionary-style attribute access."""
-        return self._attributes.get(key)
+        """Allow dictionary-style attribute access (returns ADWSAttribute object)."""
+        if key in self._attributes:
+            return ADWSAttribute(key, self._attributes[key])
+        return None
 
     def __contains__(self, key: str) -> bool:
         """Check if attribute exists."""
@@ -78,7 +81,7 @@ class ADWSEntry:
 
         # Check if attribute exists in _attributes
         if name in self._attributes:
-            return ADWSAttribute(self._attributes[name])
+            return ADWSAttribute(name, self._attributes[name])
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
