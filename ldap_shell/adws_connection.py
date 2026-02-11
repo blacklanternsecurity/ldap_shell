@@ -26,9 +26,9 @@ class ADWSAttribute:
         self.key = key  # Attribute name
         if isinstance(values, list):
             self.values = values
-            # .value returns first value if exists, empty list if empty
-            # This matches ldap3 behavior
-            self.value = values[0] if len(values) > 0 else []
+            # .value returns first value if exists, empty string if empty
+            # Empty string is hashable and works better with ldapdomaindump
+            self.value = values[0] if len(values) > 0 else ''
         else:
             self.values = [values]
             self.value = values
