@@ -49,6 +49,44 @@ class ADWSEntry:
         return key in self._attributes
 
 
+class ADWSStandardExtendedOperations:
+    """
+    Mimics ldap3.StandardExtendedOperations for paged_search and who_am_i.
+    """
+    def __init__(self, connection):
+        self._connection = connection
+
+    def paged_search(self, search_base: str, search_filter: str,
+                    attributes: Optional[List[str]] = None,
+                    paged_size: int = 500, generator: bool = False):
+        """
+        Perform paged search using ADWS.
+
+        Note: ADWS handles paging automatically, so we just perform a normal search.
+        """
+        self._connection.search(search_base, search_filter, attributes=attributes)
+        # Return None as ldapdomaindump doesn't use the return value for paged_search with generator=False
+        return None
+
+    def who_am_i(self) -> str:
+        """
+        Return the authenticated user.
+
+        Returns:
+            User string in format domain\\username
+        """
+        return self._connection.who_am_i()
+
+
+class ADWSExtendOperations:
+    """
+    Mimics ldap3.ExtendedOperationsRoot to provide .standard property.
+    """
+    def __init__(self, connection):
+        self._connection = connection
+        self.standard = ADWSStandardExtendedOperations(connection)
+
+
 class ADWSServerInfo:
     """
     Mimics ldap3.ServerInfo to provide server information.
@@ -498,19 +536,17 @@ class ADWSConnection:
         log.debug('ADWS connection closed')
         return True
 
+    @property
     def extend(self):
         """
-        Placeholder for ldap3 extend operations.
+        Provide ldap3 extend operations compatibility.
 
         Returns:
-            Self for basic compatibility
+            ExtendOperations object with standard property
         """
-        return self
-
-    @property
-    def standard(self):
-        """Placeholder for ldap3 standard extended operations."""
-        return self
+        if not hasattr(self, '_extend_ops'):
+            self._extend_ops = ADWSExtendOperations(self)
+        return self._extend_ops
 
     def who_am_i(self) -> str:
         """
