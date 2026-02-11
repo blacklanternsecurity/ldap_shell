@@ -45,10 +45,14 @@ class LdapShellModule(BaseLdapModule):
         self.log = log or logging.getLogger('ldap-shell.shell')
 
     def __call__(self):
-        # Validate target DN
-        if not LdapUtils.check_dn(self.client, self.domain_dumper, self.args.target):
-            self.log.error('Invalid target DN: %s', self.args.target)
+        # Resolve target to DN (supports both DN and sAMAccountName)
+        target_dn = LdapUtils.get_dn(self.client, self.domain_dumper, self.args.target)
+        if not target_dn:
+            self.log.error('Target object not found: %s', self.args.target)
             return
+
+        # Update target to use resolved DN
+        self.args.target = target_dn
 
         if not self.args.grantee:
             self.log.info('Grantee account not provided, using current user')

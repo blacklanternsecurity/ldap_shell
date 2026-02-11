@@ -81,12 +81,11 @@ class LdapShellModule(BaseLdapModule):
         }
 
     def __call__(self):
-        # Get target DN
-        if not LdapUtils.check_dn(self.client, self.domain_dumper, self.args.target):
-            self.log.error(f'Invalid DN: {self.args.target}')
+        # Resolve target to DN (supports both DN and sAMAccountName)
+        target_dn = LdapUtils.get_dn(self.client, self.domain_dumper, self.args.target)
+        if not target_dn:
+            self.log.error('Target object not found: %s', self.args.target)
             return
-        else:
-            target_dn = self.args.target
 
         # Get grantee information
         grantee_sid = LdapUtils.get_sid(self.client, self.domain_dumper, self.args.grantee)
