@@ -62,28 +62,36 @@ class ADWSEntry:
         return result
 
     def __getitem__(self, key: str):
-        """Allow dictionary-style attribute access (returns ADWSAttribute object)."""
-        if key in self._attributes:
-            return ADWSAttribute(key, self._attributes[key])
+        """Allow dictionary-style attribute access (returns ADWSAttribute object).
+        Case-insensitive like ldap3."""
+        # Case-insensitive attribute lookup
+        key_lower = key.lower()
+        for attr_name in self._attributes:
+            if attr_name.lower() == key_lower:
+                return ADWSAttribute(attr_name, self._attributes[attr_name])
         # Return empty attribute if not found (matches ldap3 behavior)
         return ADWSAttribute(key, [])
 
     def __contains__(self, key: str) -> bool:
-        """Check if attribute exists."""
-        return key in self._attributes
+        """Check if attribute exists. Case-insensitive like ldap3."""
+        key_lower = key.lower()
+        return any(attr_name.lower() == key_lower for attr_name in self._attributes)
 
     def __getattr__(self, name: str):
         """
         Allow ldap3-style attribute access (e.g., entry.objectSid.value).
         This is called when normal attribute lookup fails.
+        Case-insensitive like ldap3.
         """
         if name.startswith('_'):
             # Avoid infinite recursion for private attributes
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        # Check if attribute exists in _attributes
-        if name in self._attributes:
-            return ADWSAttribute(name, self._attributes[name])
+        # Case-insensitive attribute lookup (like ldap3)
+        name_lower = name.lower()
+        for attr_name in self._attributes:
+            if attr_name.lower() == name_lower:
+                return ADWSAttribute(attr_name, self._attributes[attr_name])
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
