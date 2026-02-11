@@ -456,12 +456,16 @@ class NNS:
             payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
         )
 
+        logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
+
         # Check for errors
         if NNS_msg_resp["message_id"] == MessageID.ERROR:
-            err_type, err_msg = ERROR_MESSAGES[
-                int.from_bytes(NNS_msg_resp["payload"], "big")
-            ]
-            raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
+            err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
+            if err_code in ERROR_MESSAGES:
+                err_type, err_msg = ERROR_MESSAGES[err_code]
+                raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
+            else:
+                raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code}")
 
         # For Kerberos, we need to set up the session key for encryption
         # Use the Kerberos session key for NNS encryption
@@ -490,29 +494,42 @@ class NNS:
         cipher_server = ARC4.new(self._server_sealing_key)
         self._server_sealing_handle = cipher_server.encrypt
 
-        # Send final handshake message
-        c_NegTokenTarg = impacket.spnego.SPNEGO_NegTokenResp()
-        c_NegTokenTarg['NegResult'] = b'\x00'  # Accept completed
+        # Parse the server's response to see if we need to send more data
+        # For Kerberos, the server might send an AP_REP or just accept
+        if NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
+            # Server sent more data (possibly AP_REP), send final acknowledgment
+            logging.debug("Server sent IN_PROGRESS, sending final acknowledgment")
 
-        NNS_handshake(
-            message_id=MessageID.IN_PROGRESS,
-            major_version=1,
-            minor_version=0,
-            payload=c_NegTokenTarg.getData(),
-        ).send(self._sock)
+            c_NegTokenTarg = impacket.spnego.SPNEGO_NegTokenResp()
+            c_NegTokenTarg['NegResult'] = b'\x00'  # Accept completed
 
-        # Check for final success
-        NNS_msg_done = NNS_handshake(
-            message_id=int.from_bytes(self._sock.recv(1), "big"),
-            major_version=int.from_bytes(self._sock.recv(1), "big"),
-            minor_version=int.from_bytes(self._sock.recv(1), "big"),
-            payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
-        )
+            NNS_handshake(
+                message_id=MessageID.IN_PROGRESS,
+                major_version=1,
+                minor_version=0,
+                payload=c_NegTokenTarg.getData(),
+            ).send(self._sock)
 
-        if NNS_msg_done["message_id"] == MessageID.ERROR:
-            err_type, err_msg = ERROR_MESSAGES[
-                int.from_bytes(NNS_msg_done["payload"], "big")
-            ]
-            raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error {err_type} {err_msg}")
+            # Check for final success
+            NNS_msg_done = NNS_handshake(
+                message_id=int.from_bytes(self._sock.recv(1), "big"),
+                major_version=int.from_bytes(self._sock.recv(1), "big"),
+                minor_version=int.from_bytes(self._sock.recv(1), "big"),
+                payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
+            )
+
+            logging.debug(f"Final message_id: 0x{NNS_msg_done['message_id']:02x}")
+
+            if NNS_msg_done["message_id"] == MessageID.ERROR:
+                err_code = int.from_bytes(NNS_msg_done["payload"], "big")
+                if err_code in ERROR_MESSAGES:
+                    err_type, err_msg = ERROR_MESSAGES[err_code]
+                    raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error {err_type} {err_msg}")
+                else:
+                    raise SystemExit(f"[-] Kerberos Auth Failed at final stage with error code {err_code}")
+        elif NNS_msg_resp["message_id"] == MessageID.DONE:
+            logging.debug("Server accepted authentication immediately")
+        else:
+            logging.warning(f"Unexpected message_id: 0x{NNS_msg_resp['message_id']:02x}")
 
         logging.debug("Kerberos authentication successful")

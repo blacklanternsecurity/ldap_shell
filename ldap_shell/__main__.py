@@ -304,19 +304,25 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
     # Get TGT if we don't have one
     if TGT is None:
         if TGS is None:
-            log.debug('Requesting TGT from KDC')
-            tgt, cipher, old_session_key, session_key = getKerberosTGT(
-                user_name, password, domain, lmhash, nthash, aes_key, kdc_host
-            )
-            TGT = {
-                'KDC_REP': tgt,
-                'cipher': cipher,
-                'sessionKey': session_key
-            }
+            log.debug('Requesting TGT from KDC for domain %s', domain)
+            try:
+                tgt, cipher, old_session_key, session_key = getKerberosTGT(
+                    user_name, password, domain, lmhash, nthash, aes_key, kdc_host
+                )
+                TGT = {
+                    'KDC_REP': tgt,
+                    'cipher': cipher,
+                    'sessionKey': session_key
+                }
+                log.debug('Successfully obtained TGT')
+            except Exception as e:
+                log.error('Failed to obtain TGT: %s', e)
+                raise
     else:
         tgt = TGT['KDC_REP']
         cipher = TGT['cipher']
         session_key = TGT['sessionKey']
+        log.debug('Using TGT from cache')
 
     # Get TGS for ADWS service if we don't have one
     if TGS is None:
@@ -325,20 +331,26 @@ def get_kerberos_credentials_for_adws(user: str, password: str, domain: str,
             f'HOST/{kdc_host}',
             type=constants.PrincipalNameType.NT_SRV_INST.value
         )
-        log.debug(f'Requesting TGS for HOST service: HOST/{kdc_host}')
+        log.debug('Requesting TGS for HOST service: HOST/%s', kdc_host)
 
-        tgs, cipher, old_session_key, session_key = getKerberosTGS(
-            server_name, domain, kdc_host, tgt, cipher, session_key
-        )
-        TGS = {
-            'KDC_REP': tgs,
-            'cipher': cipher,
-            'sessionKey': session_key
-        }
+        try:
+            tgs, cipher, old_session_key, session_key = getKerberosTGS(
+                server_name, domain, kdc_host, tgt, cipher, session_key
+            )
+            TGS = {
+                'KDC_REP': tgs,
+                'cipher': cipher,
+                'sessionKey': session_key
+            }
+            log.debug('Successfully obtained TGS for HOST/%s', kdc_host)
+        except Exception as e:
+            log.error('Failed to obtain TGS for HOST/%s: %s', kdc_host, e)
+            raise
     else:
         tgs = TGS['KDC_REP']
         cipher = TGS['cipher']
         session_key = TGS['sessionKey']
+        log.debug('Using TGS from cache')
 
     return TGT, TGS
 
