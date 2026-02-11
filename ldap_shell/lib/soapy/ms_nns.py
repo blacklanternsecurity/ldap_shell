@@ -135,6 +135,9 @@ class NNS:
         # Set the kerberos target if TGT is provided
         self._kerberos_target = fqdn if tgt is not None else None
 
+        # SPNEGO client for Kerberos wrap/unwrap operations
+        self._spnego_client = None
+
     def _fix_hashes(self, hash: str | bytes) -> bytes | str:
         """fixes up hash if present into bytes and
         ensures length is 32.
@@ -218,59 +221,90 @@ class NNS:
         nns_data["payload"] = payload
         logging.debug(f"NNS _recv: received {len(payload)} bytes")
 
-        # NTLM decryption
-        nns_signed_payload = NNS_Signed_payload()
-        nns_signed_payload["signature"] = nns_data["payload"][0:16]
-        nns_signed_payload["cipherText"] = nns_data["payload"][16:]
+        # Use GSS-API unwrap for Kerberos, NTLM SEAL for NTLM
+        if self._spnego_client is not None:
+            # Kerberos: Use GSS-API unwrap
+            logging.debug(f"NNS _recv: GSS-API unwrapping {len(payload)} bytes")
+            try:
+                unwrapped = self._spnego_client.unwrap(payload)
+                clearText = unwrapped.data
+                logging.debug(f"NNS _recv: unwrapped to {len(clearText)} bytes")
+                return clearText
+            except Exception as e:
+                logging.error(f"NNS _recv: GSS-API unwrap failed: {e}")
+                raise
+        else:
+            # NTLM decryption
+            nns_signed_payload = NNS_Signed_payload()
+            nns_signed_payload["signature"] = nns_data["payload"][0:16]
+            nns_signed_payload["cipherText"] = nns_data["payload"][16:]
 
-        logging.debug(f"NNS _recv: decrypting {len(nns_signed_payload['cipherText'])} bytes (sequence={self._sequence})")
-        try:
-            clearText, sig = self.seal(nns_signed_payload["cipherText"])
-            logging.debug(f"NNS _recv: decrypted to {len(clearText)} bytes")
-            return clearText
-        except Exception as e:
-            logging.error(f"NNS _recv: decryption failed: {e}")
-            raise
+            logging.debug(f"NNS _recv: decrypting {len(nns_signed_payload['cipherText'])} bytes (sequence={self._sequence})")
+            try:
+                clearText, sig = self.seal(nns_signed_payload["cipherText"])
+                logging.debug(f"NNS _recv: decrypted to {len(clearText)} bytes")
+                return clearText
+            except Exception as e:
+                logging.error(f"NNS _recv: decryption failed: {e}")
+                raise
 
     def sendall(self, data: bytes):
         """send to server in sealed NNS data packet via tcp socket."""
         logging.debug(f"NNS sendall: encrypting {len(data)} bytes (sequence={self._sequence})")
 
-        # NTLM encryption
-        try:
-            cipherText, sig = impacket.ntlm.SEAL(
-                self._flags,
-                self._client_signing_key,
-                self._client_sealing_key,
-                data,
-                data,
-                self._sequence,
-                self._client_sealing_handle,
-            )
-            logging.debug(f"NNS sendall: encrypted to {len(cipherText)} bytes with {len(sig.getData())} byte signature")
-        except Exception as e:
-            logging.error(f"NNS sendall: encryption failed: {e}")
-            raise
+        # Use GSS-API wrap for Kerberos, NTLM SEAL for NTLM
+        if self._spnego_client is not None:
+            # Kerberos: Use GSS-API wrap
+            try:
+                wrapped_data = self._spnego_client.wrap(data)
+                logging.debug(f"NNS sendall: GSS-API wrapped to {len(wrapped_data.data)} bytes")
 
-        # build the NNS data packet
-        pkt = NNS_data()
+                # Build the NNS data packet
+                pkt = NNS_data()
+                pkt["payload"] = wrapped_data.data
 
-        # payload is signature prepended on the ciphertext
-        payload = NNS_Signed_payload()
-        payload["signature"] = sig
-        payload["cipherText"] = cipherText
-        pkt["payload"] = payload.getData()
+                logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
+                self._sock.sendall(pkt.getData())
+                logging.debug("NNS sendall: data sent successfully")
+            except Exception as e:
+                logging.error(f"NNS sendall: GSS-API wrap failed: {e}")
+                raise
+        else:
+            # NTLM encryption
+            try:
+                cipherText, sig = impacket.ntlm.SEAL(
+                    self._flags,
+                    self._client_signing_key,
+                    self._client_sealing_key,
+                    data,
+                    data,
+                    self._sequence,
+                    self._client_sealing_handle,
+                )
+                logging.debug(f"NNS sendall: encrypted to {len(cipherText)} bytes with {len(sig.getData())} byte signature")
+            except Exception as e:
+                logging.error(f"NNS sendall: encryption failed: {e}")
+                raise
 
-        logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
-        try:
-            self._sock.sendall(pkt.getData())
-            logging.debug("NNS sendall: data sent successfully")
-        except Exception as e:
-            logging.error(f"NNS sendall: socket send failed: {e}")
-            raise
+            # build the NNS data packet
+            pkt = NNS_data()
 
-        # increment the sequence number after sending
-        self._sequence += 1
+            # payload is signature prepended on the ciphertext
+            payload = NNS_Signed_payload()
+            payload["signature"] = sig
+            payload["cipherText"] = cipherText
+            pkt["payload"] = payload.getData()
+
+            logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
+            try:
+                self._sock.sendall(pkt.getData())
+                logging.debug("NNS sendall: data sent successfully")
+            except Exception as e:
+                logging.error(f"NNS sendall: socket send failed: {e}")
+                raise
+
+            # increment the sequence number after sending
+            self._sequence += 1
 
     def auth_ntlm(self) -> None:
         """Authenticate to the dest with NTLMV2 authentication"""
@@ -645,6 +679,12 @@ class NNS:
                 self._server_sealing_handle = cipher_server.encrypt
 
                 logging.debug("NNS encryption initialized with Kerberos session key using NTLM key derivation")
+
+                # Store the SPNEGO client for wrap/unwrap operations
+                # This is needed for Kerberos encryption which uses GSS-API wrap/unwrap
+                # instead of NTLM SEAL
+                self._spnego_client = client
+                logging.debug("Stored SPNEGO client for GSS-API wrap/unwrap operations")
 
             except Exception as e:
                 logging.error(f"Failed to extract session key from pyspnego: {e}")
