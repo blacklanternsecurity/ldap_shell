@@ -82,11 +82,11 @@ class LdapShellModule(BaseLdapModule):
             # Prepare user attributes
             # Based on SharpADWS, send only minimal required attributes
             # Attributes like 'name', 'cn', 'distinguishedName', 'objectCategory' are auto-generated
-            # IMPORTANT: userAccountControl must be a STRING, not int (per SharpADWS AddComputer.cs)
+            # userAccountControl: send as int since AD schema defines it as INTEGER type
             new_user_dn = f'CN={self.args.username},{self.args.target_dn or f"CN=Users,{self.domain_dumper.root}"}'
             ucd = {
                 'sAMAccountName': self.args.username,
-                'userAccountControl': '512',  # Must be string, not int!
+                'userAccountControl': 512,  # Send as int (AD schema type is INTEGER)
                 'unicodePwd': f'"{password}"'.encode('utf-16-le'),
             }
 
