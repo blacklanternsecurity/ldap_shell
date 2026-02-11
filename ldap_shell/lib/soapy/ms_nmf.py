@@ -459,22 +459,31 @@ class NMFConnection:
             NMFServerFault: Raises when the server ack upgrade request
             or the preamble end, indicating connection falure.
         """
+        import logging
 
         # send the preamble
+        logging.debug("Sending NMF preamble")
         NMFPreamble(
             version=(1, 0),
             mode=self._mode,
             via=f"net.tcp://{self._fqdn}:9389/ActiveDirectoryWebServices/{resource}",
             encoding=self._encoding,
         ).send(self._transport)
+        logging.debug("NMF preamble sent successfully")
 
+        logging.debug("Starting NMF upgrade")
         self._upgrade()
+        logging.debug("NMF upgrade completed, authentication successful")
 
         # preamble end
+        logging.debug("Sending NMFPreambleEnd")
         NMFPreambleEnd().send(self._transport)
+        logging.debug("NMFPreambleEnd sent successfully")
 
         # wait for ack
+        logging.debug("Waiting for NMFPreambleAck")
         self._throw_if_not(NMFPreambleAck, self._recv())
+        logging.debug("Received NMFPreambleAck, connection established")
 
     def _end_record(self) -> None:
         """Send an end record"""

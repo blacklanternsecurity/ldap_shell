@@ -194,34 +194,63 @@ class NNS:
 
     def _recv(self, _: int = 0) -> bytes:
         """Receive an NNS packet and return the entire decrypted contents."""
+        logging.debug("NNS _recv: waiting for data from server")
+
         nns_data = NNS_data()
-        size = int.from_bytes(self._sock.recv(4), "little")
+        try:
+            size_bytes = self._sock.recv(4)
+            if not size_bytes:
+                logging.error("NNS _recv: connection closed by server (no size bytes)")
+                raise ConnectionError("Connection closed by server")
+            size = int.from_bytes(size_bytes, "little")
+            logging.debug(f"NNS _recv: expecting {size} bytes")
+        except Exception as e:
+            logging.error(f"NNS _recv: failed to read size: {e}")
+            raise
 
         payload = b""
         while len(payload) != size:
-            payload += self._sock.recv(size - len(payload))
+            chunk = self._sock.recv(size - len(payload))
+            if not chunk:
+                logging.error(f"NNS _recv: connection closed while reading payload (got {len(payload)}/{size} bytes)")
+                raise ConnectionError("Connection closed by server while reading payload")
+            payload += chunk
         nns_data["payload"] = payload
+        logging.debug(f"NNS _recv: received {len(payload)} bytes")
 
         # NTLM decryption
         nns_signed_payload = NNS_Signed_payload()
         nns_signed_payload["signature"] = nns_data["payload"][0:16]
         nns_signed_payload["cipherText"] = nns_data["payload"][16:]
 
-        clearText, sig = self.seal(nns_signed_payload["cipherText"])
-        return clearText
+        logging.debug(f"NNS _recv: decrypting {len(nns_signed_payload['cipherText'])} bytes (sequence={self._sequence})")
+        try:
+            clearText, sig = self.seal(nns_signed_payload["cipherText"])
+            logging.debug(f"NNS _recv: decrypted to {len(clearText)} bytes")
+            return clearText
+        except Exception as e:
+            logging.error(f"NNS _recv: decryption failed: {e}")
+            raise
 
     def sendall(self, data: bytes):
         """send to server in sealed NNS data packet via tcp socket."""
+        logging.debug(f"NNS sendall: encrypting {len(data)} bytes (sequence={self._sequence})")
+
         # NTLM encryption
-        cipherText, sig = impacket.ntlm.SEAL(
-            self._flags,
-            self._client_signing_key,
-            self._client_sealing_key,
-            data,
-            data,
-            self._sequence,
-            self._client_sealing_handle,
-        )
+        try:
+            cipherText, sig = impacket.ntlm.SEAL(
+                self._flags,
+                self._client_signing_key,
+                self._client_sealing_key,
+                data,
+                data,
+                self._sequence,
+                self._client_sealing_handle,
+            )
+            logging.debug(f"NNS sendall: encrypted to {len(cipherText)} bytes with {len(sig.getData())} byte signature")
+        except Exception as e:
+            logging.error(f"NNS sendall: encryption failed: {e}")
+            raise
 
         # build the NNS data packet
         pkt = NNS_data()
@@ -232,7 +261,13 @@ class NNS:
         payload["cipherText"] = cipherText
         pkt["payload"] = payload.getData()
 
-        self._sock.sendall(pkt.getData())
+        logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
+        try:
+            self._sock.sendall(pkt.getData())
+            logging.debug("NNS sendall: data sent successfully")
+        except Exception as e:
+            logging.error(f"NNS sendall: socket send failed: {e}")
+            raise
 
         # increment the sequence number after sending
         self._sequence += 1
