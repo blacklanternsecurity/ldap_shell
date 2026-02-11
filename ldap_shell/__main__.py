@@ -185,8 +185,10 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
                 username, password, domain, lmhash, nthash, aes_key, kdc_host
             )
 
+            # For Kerberos, we must use the DC hostname (kdc_host) not the domain name
+            # because the TGS is for HOST/kdc_host
             client = ADWSConnection(
-                hostname=target,
+                hostname=kdc_host,
                 domain=domain,
                 username=username,
                 tgt=tgt,
