@@ -26,7 +26,9 @@ class ADWSAttribute:
         self.key = key  # Attribute name
         if isinstance(values, list):
             self.values = values
-            self.value = values[0] if len(values) == 1 else values
+            # .value always returns single item (first value or None if empty)
+            # Use .values to access all values for multi-valued attributes
+            self.value = values[0] if len(values) > 0 else None
         else:
             self.values = [values]
             self.value = values
