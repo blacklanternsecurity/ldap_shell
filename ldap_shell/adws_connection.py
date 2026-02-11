@@ -323,7 +323,7 @@ class ADWSConnection:
         # ADWS requires explicit attribute lists
         # Note: '*' causes "size limit exceeded" errors for large result sets
         # Instead, we request a comprehensive list of common AD attributes
-        if attributes is None or len(attributes) == 0 or attributes == ['*']:
+        if attributes is None or len(attributes) == 0 or attributes == ['*'] or attributes == '*':
             # Common AD attributes for ldapdomaindump compatibility
             attr_list = [
                 'distinguishedName', 'objectSid', 'objectClass', 'name',
