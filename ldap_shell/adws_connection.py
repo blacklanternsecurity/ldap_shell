@@ -26,9 +26,9 @@ class ADWSAttribute:
         self.key = key  # Attribute name
         if isinstance(values, list):
             self.values = values
-            # .value always returns single item (first value or None if empty)
-            # Use .values to access all values for multi-valued attributes
-            self.value = values[0] if len(values) > 0 else None
+            # .value returns first value if exists, empty list if empty
+            # This matches ldap3 behavior
+            self.value = values[0] if len(values) > 0 else []
         else:
             self.values = [values]
             self.value = values
@@ -403,7 +403,14 @@ class ADWSConnection:
                 'lastLogon', 'lastLogonTimestamp', 'pwdLastSet',
                 'servicePrincipalName', 'dNSHostName', 'operatingSystem',
                 'operatingSystemVersion', 'operatingSystemServicePack',
-                'adminCount', 'sIDHistory', 'objectGUID'
+                'adminCount', 'sIDHistory', 'objectGUID',
+                # Policy attributes for domain policy dump
+                'lockOutObservationWindow', 'lockoutDuration', 'lockoutThreshold',
+                'maxPwdAge', 'minPwdAge', 'minPwdLength', 'pwdHistoryLength',
+                'pwdProperties', 'ms-DS-MachineAccountQuota',
+                # Trust attributes
+                'flatName', 'securityIdentifier', 'trustAttributes',
+                'trustDirection', 'trustType'
             ]
         else:
             attr_list = list(attributes)
