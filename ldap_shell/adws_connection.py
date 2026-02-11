@@ -372,32 +372,32 @@ class ADWSConnection:
             log.error('ADWS factory client not available for object creation')
             return False
 
-        # Attributes that cannot be set during Create and must be set via Put afterward
-        POST_CREATE_ATTRIBUTES = {
-            'userAccountControl',
-            'accountExpires',
-            'unicodePwd',
-            'userPassword',
-            'pwdLastSet',
-            'lockoutTime',
-            'badPwdCount',
-            'badPasswordTime',
-            'lastLogon',
-            'lastLogonTimestamp',
-            'logonCount',
-            'objectCategory',  # Often auto-generated
+        # Attributes that are auto-generated and should not be set during Create
+        # Based on SharpADWS, userAccountControl and unicodePwd CAN be set during Create
+        AUTO_GENERATED_ATTRIBUTES = {
+            'name',  # Auto-generated from CN
+            'distinguishedName',  # Handled via container-hierarchy-parent and RDN
+            'objectCategory',  # Often auto-generated, can cause conflicts
         }
+
+        # Most attributes that might seem restricted can actually be set during Create.
+        # Only truly problematic attributes should be in POST_CREATE_ATTRIBUTES.
+        # Based on SharpADWS AddComputer.cs, userAccountControl and unicodePwd work fine.
+        POST_CREATE_ATTRIBUTES = set()  # Keep empty for now, add only if errors occur
 
         # Split attributes
         create_attrs = {}
         post_create_attrs = {}
 
         for attr_name, attr_value in attributes.items():
-            if attr_name == 'distinguishedName':
-                continue  # DN is handled separately
+            if attr_name in AUTO_GENERATED_ATTRIBUTES:
+                continue  # Skip auto-generated attributes
             elif attr_name in POST_CREATE_ATTRIBUTES:
                 post_create_attrs[attr_name] = attr_value
             else:
+                # Skip empty values
+                if attr_value is None or (isinstance(attr_value, str) and not attr_value):
+                    continue
                 create_attrs[attr_name] = attr_value
 
         try:

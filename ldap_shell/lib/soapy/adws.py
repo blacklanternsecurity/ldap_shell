@@ -518,15 +518,22 @@ class ADWSConnect:
             # Handle different attribute types
             if isinstance(attr_value, bytes):
                 # Binary attribute - base64 encode
+                if not attr_value:  # Skip empty bytes
+                    continue
                 import base64
                 encoded_value = base64.b64encode(attr_value).decode('ascii')
                 values_xml.append(f'<ad:value xsi:type="xsd:base64Binary">{encoded_value}</ad:value>')
             elif isinstance(attr_value, int):
-                values_xml.append(f'<ad:value xsi:type="xsd:integer">{attr_value}</ad:value>')
+                # Use 'int' type for integers (SharpADWS uses 'int', not 'integer')
+                values_xml.append(f'<ad:value xsi:type="xsd:int">{attr_value}</ad:value>')
             elif isinstance(attr_value, list):
                 # Multi-valued attribute
                 for value in attr_value:
+                    if value is None or (isinstance(value, str) and not value):
+                        continue  # Skip empty values
                     if isinstance(value, bytes):
+                        if not value:
+                            continue
                         import base64
                         encoded_value = base64.b64encode(value).decode('ascii')
                         values_xml.append(f'<ad:value xsi:type="xsd:base64Binary">{encoded_value}</ad:value>')
@@ -534,7 +541,13 @@ class ADWSConnect:
                         values_xml.append(f'<ad:value xsi:type="xsd:string">{value}</ad:value>')
             else:
                 # String attribute
+                if attr_value is None or (isinstance(attr_value, str) and not attr_value):
+                    continue  # Skip empty strings
                 values_xml.append(f'<ad:value xsi:type="xsd:string">{attr_value}</ad:value>')
+
+            # Skip if no values were added
+            if not values_xml:
+                continue
 
             attrs_xml.append(f'''<da:AttributeTypeAndValue>
                     <da:AttributeType>addata:{attr_name}</da:AttributeType>
@@ -543,19 +556,19 @@ class ADWSConnect:
                     </da:AttributeValue>
                 </da:AttributeTypeAndValue>''')
 
-        # Add parent container
-        attrs_xml.append(f'''<da:AttributeTypeAndValue>
-                    <da:AttributeType>ad:container-hierarchy-parent</da:AttributeType>
-                    <da:AttributeValue>
-                        <ad:value xsi:type="xsd:string">{parent_container}</ad:value>
-                    </da:AttributeValue>
-                </da:AttributeTypeAndValue>''')
-
-        # Add RDN (relative distinguished name)
+        # Add RDN (relative distinguished name) - BEFORE parent per SharpADWS order
         attrs_xml.append(f'''<da:AttributeTypeAndValue>
                     <da:AttributeType>ad:relativeDistinguishedName</da:AttributeType>
                     <da:AttributeValue>
                         <ad:value xsi:type="xsd:string">{rdn}</ad:value>
+                    </da:AttributeValue>
+                </da:AttributeTypeAndValue>''')
+
+        # Add parent container - AFTER RDN per SharpADWS order
+        attrs_xml.append(f'''<da:AttributeTypeAndValue>
+                    <da:AttributeType>ad:container-hierarchy-parent</da:AttributeType>
+                    <da:AttributeValue>
+                        <ad:value xsi:type="xsd:string">{parent_container}</ad:value>
                     </da:AttributeValue>
                 </da:AttributeTypeAndValue>''')
 

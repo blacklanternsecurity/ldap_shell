@@ -80,19 +80,16 @@ class LdapShellModule(BaseLdapModule):
             password = self.args.password or SecurityUtils.generate_password(15)
             
             # Prepare user attributes
+            # Based on SharpADWS, send only minimal required attributes
+            # Attributes like 'name', 'cn', 'distinguishedName', 'objectCategory' are auto-generated
             new_user_dn = f'CN={self.args.username},{self.args.target_dn or f"CN=Users,{self.domain_dumper.root}"}'
             ucd = {
-                'objectCategory': f'CN=Person,CN=Schema,CN=Configuration,{self.domain_dumper.root}',
-                'distinguishedName': new_user_dn,
-                'cn': self.args.username,
-                'sn': self.args.username,
-                'givenName': self.args.username,
-                'displayName': self.args.username,
-                'name': self.args.username,
+                'sAMAccountName': self.args.username,
                 'userAccountControl': 512,
                 'accountExpires': '0',
-                'sAMAccountName': self.args.username,
-                'unicodePwd': f'"{password}"'.encode('utf-16-le')
+                'unicodePwd': f'"{password}"'.encode('utf-16-le'),
+                # Optional descriptive attributes (similar to SharpADWS AddComputer)
+                'displayName': self.args.username,
             }
 
             # Create user object
