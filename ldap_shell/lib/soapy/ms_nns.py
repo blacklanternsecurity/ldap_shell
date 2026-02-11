@@ -457,15 +457,31 @@ class NNS:
         )
 
         logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
+        logging.debug(f"Response payload length: {len(NNS_msg_resp['payload'])} bytes")
+        if len(NNS_msg_resp['payload']) > 0:
+            logging.debug(f"Response payload (hex): {NNS_msg_resp['payload'].hex()}")
+
+        # Try to parse SPNEGO response if present
+        if len(NNS_msg_resp['payload']) > 0 and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
+            try:
+                spnego_resp = impacket.spnego.SPNEGO_NegTokenResp(NNS_msg_resp['payload'])
+                logging.debug(f"SPNEGO NegTokenResp parsed successfully")
+                if 'NegResult' in spnego_resp.fields:
+                    neg_result = spnego_resp['NegResult']
+                    logging.debug(f"SPNEGO NegResult: {neg_result}")
+            except Exception as e:
+                logging.debug(f"Could not parse as SPNEGO token: {e}")
 
         # Check for errors
         if NNS_msg_resp["message_id"] == MessageID.ERROR:
             err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
+            logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
             if err_code in ERROR_MESSAGES:
                 err_type, err_msg = ERROR_MESSAGES[err_code]
                 raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
             else:
-                raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code}")
+                # Try to interpret as HRESULT or Windows error code
+                raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
 
         # For Kerberos, we need to set up the session key for encryption
         # Use the Kerberos session key for NNS encryption
