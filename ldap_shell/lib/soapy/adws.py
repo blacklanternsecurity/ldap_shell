@@ -233,7 +233,8 @@ class NTLMAuth(ADWSAuthType):
 
 
 class KerberosAuth(ADWSAuthType):
-    def __init__(self, tgt: dict, tgs: dict | None = None, target_realm: str | None = None):
+    def __init__(self, tgt: dict, tgs: dict | None = None, target_realm: str | None = None,
+                 password: str | None = None, nt_hash: str | None = None, aes_key: str | None = None):
         """
         Kerberos authentication using TGT/TGS.
 
@@ -244,10 +245,16 @@ class KerberosAuth(ADWSAuthType):
                  'sessionKey': Session key
             tgs: Optional dictionary containing TGS information (same format as TGT)
             target_realm: Optional target realm for cross-realm authentication
+            password: Password for pyspnego authentication
+            nt_hash: NT hash for authentication
+            aes_key: AES key for authentication
         """
         self.tgt = tgt
         self.tgs = tgs
         self.target_realm = target_realm
+        self.password = password
+        self.nt_hash = nt_hash
+        self.aes_key = aes_key
 
 
 class ADWSConnect:
@@ -293,6 +300,7 @@ class ADWSConnect:
                 fqdn=self._fqdn,
                 domain=self._domain,
                 username=self._username,
+                password=self._auth.password,
                 tgt=self._auth.tgt,
                 tgs=self._auth.tgs,
                 target_realm=self._auth.target_realm,

@@ -367,15 +367,52 @@ class NNS:
             logging.error("pyspnego library not installed. Install with: pip install pyspnego[kerberos]")
             raise SystemExit("[-] pyspnego library required for Kerberos authentication")
 
+        import os
+        import tempfile
+        from impacket.krb5.ccache import CCache
+
         logging.debug("Attempting Kerberos authentication to ADWS using pyspnego")
 
+        temp_ccache = None
+        original_krb5ccname = os.environ.get('KRB5CCNAME')
+
         try:
+            # If we have TGT/TGS from impacket, write them to a temporary ccache
+            # so pyspnego can read them via GSSAPI
+            if self._tgt is not None:
+                logging.debug("Writing TGT/TGS to temporary ccache for pyspnego")
+
+                # Create a temporary ccache file
+                temp_fd, temp_ccache = tempfile.mkstemp(prefix='krb5cc_ldapshell_', suffix='.ccache')
+                os.close(temp_fd)
+
+                # Create CCache object
+                ccache = CCache()
+                ccache.fromTGT(self._tgt['KDC_REP'], self._tgt['sessionKey'], self._tgt['sessionKey'])
+
+                # If we have TGS, add it too
+                if self._tgs is not None:
+                    # Extract the service principal from TGS
+                    tgs_rep = self._tgs['KDC_REP']
+                    service_principal = f"HOST/{self._fqdn}@{self._domain.upper()}"
+                    ccache.fromTGS(self._tgs['KDC_REP'], self._tgs['sessionKey'], self._tgs['sessionKey'])
+
+                # Save the ccache to the temp file
+                ccache.saveFile(temp_ccache)
+
+                # Set KRB5CCNAME to point to our temp ccache
+                os.environ['KRB5CCNAME'] = temp_ccache
+                logging.debug(f"Set KRB5CCNAME to temporary ccache: {temp_ccache}")
+
             # Create SPNEGO client context for Kerberos authentication
             # The hostname should be the FQDN of the DC for proper SPN resolution
             logging.debug(f"Creating SPNEGO client for {self._username}@{self._domain.upper()} -> {self._fqdn}")
 
             # Build the client context
             # pyspnego will handle the GSSAPI/SSPI calls to get Kerberos tickets
+            # If we set KRB5CCNAME above, it will use that ccache
+            # If password is provided, it will authenticate with password
+            # Otherwise, it will use the system's default ccache
             client = spnego.client(
                 username=f"{self._username}@{self._domain.upper()}",
                 password=self._password if self._password else None,
@@ -516,3 +553,19 @@ class NNS:
             logging.error(f"Kerberos authentication failed: {e}")
             logging.debug("Exception details:", exc_info=True)
             raise
+        finally:
+            # Clean up temporary ccache and restore original KRB5CCNAME
+            if temp_ccache is not None:
+                try:
+                    os.unlink(temp_ccache)
+                    logging.debug(f"Deleted temporary ccache: {temp_ccache}")
+                except Exception as e:
+                    logging.warning(f"Failed to delete temporary ccache {temp_ccache}: {e}")
+
+                # Restore original KRB5CCNAME
+                if original_krb5ccname is not None:
+                    os.environ['KRB5CCNAME'] = original_krb5ccname
+                    logging.debug(f"Restored KRB5CCNAME to: {original_krb5ccname}")
+                elif 'KRB5CCNAME' in os.environ:
+                    del os.environ['KRB5CCNAME']
+                    logging.debug("Removed temporary KRB5CCNAME from environment")

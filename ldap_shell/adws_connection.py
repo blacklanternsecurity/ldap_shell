@@ -153,7 +153,8 @@ class ADWSConnection:
         # Create auth object
         if tgt is not None:
             # Kerberos authentication
-            self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm)
+            self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm,
+                                     password=password, nt_hash=nt_hash)
         elif nt_hash:
             # NTLM with hash
             self._auth = NTLMAuth(hashes=nt_hash)

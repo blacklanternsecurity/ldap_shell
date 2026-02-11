@@ -191,6 +191,8 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
                 hostname=kdc_host,
                 domain=domain,
                 username=username,
+                password=password,
+                nt_hash=nthash,
                 tgt=tgt,
                 tgs=tgs
             )
