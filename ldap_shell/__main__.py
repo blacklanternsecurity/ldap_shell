@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '-use-ldaps', action='store_true', help='Use LDAPS for create user/computer and change passwords'
     )
+    parser.add_argument(
+        '-use-adws', action='store_true',
+        help='Use ADWS (Active Directory Web Services) on port 9389 instead of LDAP. '
+             'Note: ADWS does not support Kerberos authentication, only NTLM'
+    )
     parser.add_argument('-no-pass', action='store_true',
                         help='don\'t ask for password (useful for -k)')
     parser.add_argument(
@@ -99,6 +104,12 @@ def start_shell(options: argparse.Namespace):
     if options.k and options.dc_host is None:
         log.critical('Kerberos auth requires DNS name of the target DC. Use -dc-host.')
         sys.exit(1)
+
+    # Validate ADWS options
+    if options.use_adws and options.k:
+        log.critical('ADWS does not support Kerberos authentication. Use NTLM (password or hash) instead.')
+        sys.exit(1)
+
     if options.use_ldaps:
         use_ldaps = True
 
@@ -110,10 +121,17 @@ def start_shell(options: argparse.Namespace):
     target = domain if options.dc_ip is None else options.dc_ip
 
     log.debug('Starting shell for %s w/ user %s', target, username)
-    client = perform_ldap_connection(
-        target, domain, username, password, options.k, use_ldaps, options.hashes,
-        lmhash, nthash, options.aesKey, options.dc_host
-    )
+
+    # Route to appropriate connection method
+    if options.use_adws:
+        client = perform_adws_connection(
+            target, domain, username, password, options.hashes, nthash
+        )
+    else:
+        client = perform_ldap_connection(
+            target, domain, username, password, options.k, use_ldaps, options.hashes,
+            lmhash, nthash, options.aesKey, options.dc_host
+        )
 
     if 'result' in client.result and client.result['result'] == 0:
         log.debug('Connection established')
@@ -136,6 +154,65 @@ def start_shell(options: argparse.Namespace):
     log.info('Starting interactive shell')
     shell.cmdloop()  # Blocks forever
     log.info('Bye!')
+
+
+def perform_adws_connection(target: str, domain: str, username: str, password: str,
+                           hashes: Optional[str], nthash: Optional[str]):
+    """
+    Establish ADWS connection using ADWSConnection adapter.
+
+    Args:
+        target: DC hostname or IP
+        domain: Domain name
+        username: Username for authentication
+        password: Password for authentication
+        hashes: Full hash string (LMHASH:NTHASH)
+        nthash: NT hash only
+
+    Returns:
+        ADWSConnection object compatible with ldap3.Connection
+    """
+    from ldap_shell.adws_connection import ADWSConnection
+
+    log.debug('Performing ADWS connection...')
+
+    try:
+        # Create ADWS connection
+        if nthash:
+            log.debug('Using NT hash for authentication')
+            client = ADWSConnection(
+                hostname=target,
+                domain=domain,
+                username=username,
+                nt_hash=nthash
+            )
+        elif password:
+            log.debug('Using password for authentication')
+            client = ADWSConnection(
+                hostname=target,
+                domain=domain,
+                username=username,
+                password=password
+            )
+        else:
+            log.critical('ADWS requires either password or NT hash for authentication')
+            sys.exit(1)
+
+        # Attempt to bind (connect)
+        bind_result = client.bind()
+
+        if not bind_result:
+            log.critical('Failed to connect to ADWS server')
+            log.debug('Details: %s', client.result)
+            sys.exit(1)
+
+        log.info('Successfully connected via ADWS on port 9389')
+        return client
+
+    except Exception as e:
+        log.critical('ADWS connection failed: %s', str(e))
+        log.debug('Details:', exc_info=True)
+        sys.exit(1)
 
 
 def perform_ldap_connection(target: str, domain: str, username: str, password: str,
