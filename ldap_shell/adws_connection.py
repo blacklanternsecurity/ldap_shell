@@ -773,7 +773,7 @@ class ADWSConnection:
             delete_vars = {
                 "object_ref": dn,
                 "uuid": str(uuid4()),
-                "fqdn": self._server
+                "fqdn": self.hostname
             }
 
             delete_msg = delete_template.format(**delete_vars)
