@@ -748,16 +748,14 @@ class ADWSConnection:
             # WS-Transfer Delete has an empty body, the object is specified in the header
 
             # Build delete SOAP message
+            # Note: Delete does NOT include IdentityManagementOperation header (that's only for Put/Modify)
             delete_template = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
                 xmlns:a="http://www.w3.org/2005/08/addressing"
-                xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory"
-                xmlns:da="http://schemas.microsoft.com/2006/11/IdentityManagement/DirectoryAccess">
+                xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory">
                 <s:Header>
                     <a:Action s:mustUnderstand="1">http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete</a:Action>
                     <ad:instance>ldap:389</ad:instance>
                     <ad:objectReferenceProperty>{object_ref}</ad:objectReferenceProperty>
-                    <da:IdentityManagementOperation s:mustUnderstand="1"
-                        xmlns:i="http://www.w3.org/2001/XMLSchema-instance"></da:IdentityManagementOperation>
                     <a:MessageID>urn:uuid:{uuid}</a:MessageID>
                     <a:ReplyTo>
                         <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
