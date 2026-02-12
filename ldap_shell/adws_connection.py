@@ -226,6 +226,61 @@ class ADWSServer:
         self.ssl = True
 
 
+class ADWSExtendStandard:
+    """Mimics ldap3.extend.standard for compatibility."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def who_am_i(self) -> str:
+        """Returns the current authenticated user's DN."""
+        # For ADWS, we construct this from the username
+        # Format: u:DOMAIN\username
+        return f"u:{self._connection.user}"
+
+    def paged_search(self, *args, **kwargs):
+        """Wrapper for paged_search - delegates to connection's method."""
+        return self._connection.paged_search(*args, **kwargs)
+
+
+class ADWSExtendMicrosoft:
+    """Mimics ldap3.extend.microsoft for compatibility."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def modify_password(self, user_dn: str, new_password: str) -> bool:
+        """
+        Change user password via ADWS.
+
+        Args:
+            user_dn: Distinguished name of user
+            new_password: New password to set
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Password change in ADWS is done by modifying unicodePwd attribute
+        # Password must be enclosed in quotes and encoded as UTF-16-LE
+        encoded_password = f'"{new_password}"'.encode('utf-16-le')
+
+        # Use modify to change the password (MODIFY_REPLACE = 'MODIFY_REPLACE' string)
+        result = self._connection.modify(
+            user_dn,
+            {'unicodePwd': [('MODIFY_REPLACE', [encoded_password])]}
+        )
+
+        return result
+
+
+class ADWSExtend:
+    """Mimics ldap3.extend for compatibility."""
+
+    def __init__(self, connection):
+        self.standard = ADWSExtendStandard(connection)
+        self.microsoft = ADWSExtendMicrosoft(connection)
+
+
 class ADWSConnection:
     """
     ADWS Connection adapter that provides an ldap3.Connection-compatible interface.
@@ -353,6 +408,16 @@ class ADWSConnection:
 
         # Schema cache
         self._schema_classes: Optional[set] = None
+
+        # Store password/hash for rebind operations
+        self._password = password
+        self._nt_hash = nt_hash
+        self._tgt = tgt
+        self._tgs = tgs
+        self._target_realm = target_realm
+
+        # Create extend object for compatibility
+        self.extend = ADWSExtend(self)
 
     def bind(self) -> bool:
         """
@@ -686,6 +751,189 @@ class ADWSConnection:
             self.result = {
                 'result': 1,
                 'description': 'Modify failed',
+                'message': str(e)
+            }
+            return False
+
+    def delete(self, dn: str) -> bool:
+        """
+        Delete an object via ADWS.
+
+        Args:
+            dn: Distinguished name of object to delete
+
+        Returns:
+            True if deletion succeeded, False otherwise
+        """
+        if not self.bound or self._put_client is None:
+            log.error('ADWS put client not available for delete operations')
+            return False
+
+        try:
+            # For ADWS delete, we need to send a Delete request via the Resource endpoint
+            # The delete operation is simpler than put - we just specify the DN
+            # WS-Transfer Delete has an empty body, the object is specified in the header
+
+            # Build delete SOAP message
+            delete_template = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                xmlns:a="http://www.w3.org/2005/08/addressing"
+                xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory"
+                xmlns:da="http://schemas.microsoft.com/2006/11/IdentityManagement/DirectoryAccess">
+                <s:Header>
+                    <a:Action s:mustUnderstand="1">http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete</a:Action>
+                    <ad:instance>ldap:389</ad:instance>
+                    <ad:objectReferenceProperty>{object_ref}</ad:objectReferenceProperty>
+                    <da:IdentityManagementOperation s:mustUnderstand="1"
+                        xmlns:i="http://www.w3.org/2001/XMLSchema-instance"></da:IdentityManagementOperation>
+                    <a:MessageID>urn:uuid:{uuid}</a:MessageID>
+                    <a:ReplyTo>
+                        <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
+                    </a:ReplyTo>
+                    <a:To s:mustUnderstand="1">net.tcp://{fqdn}:9389/ActiveDirectoryWebServices/Windows/Resource</a:To>
+                </s:Header>
+                <s:Body>
+                </s:Body>
+            </s:Envelope>"""
+
+            from uuid import uuid4
+
+            delete_vars = {
+                "object_ref": dn,
+                "uuid": str(uuid4()),
+                "fqdn": self._server
+            }
+
+            delete_msg = delete_template.format(**delete_vars)
+
+            # Send delete request using the NMF connection from put_client
+            self._put_client._nmf.send(delete_msg)
+            resp_str = self._put_client._nmf.recv()
+
+            # Parse response
+            et = self._put_client._handle_str_to_xml(resp_str)
+            if not et:
+                log.error('Failed to parse delete response')
+                self.result = {
+                    'result': 1,
+                    'description': 'Delete failed',
+                    'message': 'Failed to parse server response'
+                }
+                return False
+
+            # Check for faults
+            fault = et.find(".//s:Fault", namespaces=NAMESPACES)
+            if fault is not None:
+                fault_text = fault.find(".//s:Text", namespaces=NAMESPACES)
+                error_msg = fault_text.text if fault_text is not None else "Unknown error"
+                log.error('ADWS delete failed: %s', error_msg)
+                self.result = {
+                    'result': 1,
+                    'description': 'Delete failed',
+                    'message': error_msg
+                }
+                return False
+
+            # Success - Delete returns empty body on success
+            self.result = {'result': 0, 'description': 'success', 'message': ''}
+            return True
+
+        except Exception as e:
+            log.error('ADWS delete failed: %s', str(e))
+            self.result = {
+                'result': 1,
+                'description': 'Delete failed',
+                'message': str(e)
+            }
+            return False
+
+    def start_tls(self) -> bool:
+        """
+        Start TLS for secure connection.
+
+        For ADWS, this is a no-op since ADWS communication is already encrypted
+        via MS-NNS on port 9389. Returns True for compatibility.
+
+        Returns:
+            True (ADWS is always encrypted)
+        """
+        log.debug('start_tls() called on ADWS connection - already encrypted, returning True')
+        return True
+
+    def rebind(self, user: str = None, password: str = None, authentication: str = None) -> bool:
+        """
+        Re-authenticate with new credentials.
+
+        Args:
+            user: New user in format "DOMAIN\\username"
+            password: New password or NTLM hash
+            authentication: Authentication method ('NTLM', 'SASL', etc.)
+
+        Returns:
+            True if rebind succeeded, False otherwise
+        """
+        if not user or not password:
+            log.error('rebind() requires user and password')
+            return False
+
+        try:
+            # Parse domain and username
+            if '\\' in user:
+                domain, username = user.split('\\', 1)
+            else:
+                domain = self.domain
+                username = user
+
+            # Close existing connections
+            if self._pull_client:
+                try:
+                    self._pull_client._nmf.close()
+                except:
+                    pass
+            if self._put_client:
+                try:
+                    self._put_client._nmf.close()
+                except:
+                    pass
+            if self._factory_client:
+                try:
+                    self._factory_client._nmf.close()
+                except:
+                    pass
+
+            # Update stored credentials
+            self.domain = domain
+            self.username = username
+            self.user = f"{domain}\\{username}"
+
+            # Determine if password is a hash or plaintext
+            # NTLM hash format: lmhash:nthash or :nthash
+            if ':' in password and len(password.replace(':', '')) == 64:
+                # It's a hash
+                self._nt_hash = password
+                self._password = None
+                self._auth = NTLMAuth(hashes=password)
+                self.authentication = 'NTLM'
+            else:
+                # It's a password
+                self._password = password
+                self._nt_hash = None
+                self._auth = NTLMAuth(password=password)
+                self.authentication = 'NTLM'
+
+            # Reset connection state
+            self.bound = False
+            self._pull_client = None
+            self._put_client = None
+            self._factory_client = None
+
+            # Re-establish connection
+            return self.bind()
+
+        except Exception as e:
+            log.error('Rebind failed: %s', str(e))
+            self.result = {
+                'result': 1,
+                'description': 'Rebind failed',
                 'message': str(e)
             }
             return False
