@@ -70,7 +70,7 @@ class LdapShellModule(BaseLdapModule):
 
         if len(sd['Dacl'].aces) > 0:
             attr_values.append(sd.getData())
-        self.client.modify(target_dn, {ldap_attribute: [MODIFY_REPLACE, attr_values]}, controls=security_descriptor_control(sdflags=0x04))
+        self.client.modify(target_dn, {ldap_attribute: [(MODIFY_REPLACE, attr_values)]}, controls=security_descriptor_control(sdflags=0x04))
 
         if self.client.result['result'] == 0:
             self.log.info(f'DACL modified successfully! {user_name} now has DS-Replication privilege and can perform DCSync attack!')

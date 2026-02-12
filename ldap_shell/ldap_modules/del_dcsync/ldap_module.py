@@ -83,7 +83,7 @@ class LdapShellModule(BaseLdapModule):
         sd['Dacl'].aces = new_aces
         self.client.modify(
             target_dn,
-            {'nTSecurityDescriptor': [MODIFY_REPLACE, [sd.getData()]]},
+            {'nTSecurityDescriptor': [(MODIFY_REPLACE, [sd.getData()])]},
             controls=security_descriptor_control(sdflags=0x04)
         )
 
