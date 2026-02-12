@@ -202,6 +202,32 @@ class ADWSExtendOperations:
         self.microsoft = ADWSMicrosoftExtendedOperations(connection)
 
 
+class ADWSSchema:
+    """
+    Mimics ldap3.Schema to provide schema information.
+    For ADWS, we provide a basic schema with common AD attributes.
+    """
+    def __init__(self):
+        # Common AD attribute types - lowercase for case-insensitive lookups
+        # This is a simplified schema containing common attributes
+        self.attribute_types = {
+            # LAPS attributes
+            'ms-mcs-admpwd',           # Legacy LAPS password
+            'mslaps-encryptedpassword', # Windows LAPS encrypted password
+            'mslaps-password',          # Windows LAPS password
+            'mslaps-passwordexpirationtime',
+            # Common AD attributes
+            'cn', 'ou', 'dc', 'objectclass', 'distinguishedname',
+            'samaccountname', 'userprincipalname', 'displayname',
+            'mail', 'memberof', 'member', 'objectsid', 'objectguid',
+            'useraccountcontrol', 'pwdlastset', 'lastlogon',
+            'serviceprincipalname', 'msds-allowedtoactonbehalfofotheridentity',
+            'ntsecuritydescriptor', 'unicodepwd', 'description',
+            # gMSA attributes
+            'msds-managedpassword', 'msds-groupmsamembership',
+        }
+
+
 class ADWSServerInfo:
     """
     Mimics ldap3.ServerInfo to provide server information.
@@ -223,6 +249,7 @@ class ADWSServer:
         self.host = host
         self.port = port
         self.info = ADWSServerInfo(base_dn)
+        self.schema = ADWSSchema()
         # SSL compatibility - ADWS has built-in encryption
         self.ssl = True
 
@@ -392,6 +419,12 @@ class ADWSConnection:
         self._tgs = tgs
         self._target_realm = target_realm
 
+        # Password property for compatibility (returns hash if using hash auth, password otherwise)
+        self.password = nt_hash if nt_hash else password
+
+        # Response property for raw LDAP responses (populated after search operations)
+        self.response = []
+
     def bind(self) -> bool:
         """
         Establish connection to ADWS server.
@@ -525,6 +558,25 @@ class ADWSConnection:
 
             for entry in self._parse_xml_entries(results_xml):
                 self.entries.append(entry)
+
+            # Populate response for compatibility (used by get_ntlm module)
+            # Format: list of dicts with 'dn', 'attributes', and 'raw_attributes'
+            self.response = []
+            for entry in self.entries:
+                raw_attrs = {}
+                for attr_name in entry._attributes:
+                    attr_obj = entry[attr_name]
+                    if hasattr(attr_obj, 'raw_values') and attr_obj.raw_values:
+                        raw_attrs[attr_name] = attr_obj.raw_values
+                    elif hasattr(attr_obj, 'values') and attr_obj.values:
+                        raw_attrs[attr_name] = attr_obj.values
+
+                self.response.append({
+                    'dn': entry.entry_dn,
+                    'attributes': {k: v.values if hasattr(v, 'values') else [v]
+                                  for k, v in entry._attributes.items()},
+                    'raw_attributes': raw_attrs
+                })
 
             self.result = {'result': 0, 'description': 'success', 'message': ''}
             return True
