@@ -194,11 +194,12 @@ class ADWSStandardExtendedOperations:
 
 class ADWSExtendOperations:
     """
-    Mimics ldap3.ExtendedOperationsRoot to provide .standard property.
+    Mimics ldap3.ExtendedOperationsRoot to provide .standard and .microsoft properties.
     """
     def __init__(self, connection):
         self._connection = connection
         self.standard = ADWSStandardExtendedOperations(connection)
+        self.microsoft = ADWSMicrosoftExtendedOperations(connection)
 
 
 class ADWSServerInfo:
@@ -226,25 +227,8 @@ class ADWSServer:
         self.ssl = True
 
 
-class ADWSExtendStandard:
-    """Mimics ldap3.extend.standard for compatibility."""
-
-    def __init__(self, connection):
-        self._connection = connection
-
-    def who_am_i(self) -> str:
-        """Returns the current authenticated user's DN."""
-        # For ADWS, we construct this from the username
-        # Format: u:DOMAIN\username
-        return f"u:{self._connection.user}"
-
-    def paged_search(self, *args, **kwargs):
-        """Wrapper for paged_search - delegates to connection's method."""
-        return self._connection.paged_search(*args, **kwargs)
-
-
-class ADWSExtendMicrosoft:
-    """Mimics ldap3.extend.microsoft for compatibility."""
+class ADWSMicrosoftExtendedOperations:
+    """Mimics ldap3.MicrosoftExtendedOperations for password changes."""
 
     def __init__(self, connection):
         self._connection = connection
@@ -271,14 +255,6 @@ class ADWSExtendMicrosoft:
         )
 
         return result
-
-
-class ADWSExtend:
-    """Mimics ldap3.extend for compatibility."""
-
-    def __init__(self, connection):
-        self.standard = ADWSExtendStandard(connection)
-        self.microsoft = ADWSExtendMicrosoft(connection)
 
 
 class ADWSConnection:
@@ -415,9 +391,6 @@ class ADWSConnection:
         self._tgt = tgt
         self._tgs = tgs
         self._target_realm = target_realm
-
-        # Create extend object for compatibility
-        self.extend = ADWSExtend(self)
 
     def bind(self) -> bool:
         """
