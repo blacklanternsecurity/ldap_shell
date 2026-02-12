@@ -210,21 +210,22 @@ class ADWSSchema:
     def __init__(self):
         # Common AD attribute types - lowercase for case-insensitive lookups
         # This is a simplified schema containing common attributes
+        # NOTE: Optional attributes like LAPS are NOT included by default since they
+        # may not be installed. The module will correctly detect their absence.
         self.attribute_types = {
-            # LAPS attributes
-            'ms-mcs-admpwd',           # Legacy LAPS password
-            'mslaps-encryptedpassword', # Windows LAPS encrypted password
-            'mslaps-password',          # Windows LAPS password
-            'mslaps-passwordexpirationtime',
-            # Common AD attributes
+            # Common AD attributes (always present)
             'cn', 'ou', 'dc', 'objectclass', 'distinguishedname',
             'samaccountname', 'userprincipalname', 'displayname',
             'mail', 'memberof', 'member', 'objectsid', 'objectguid',
             'useraccountcontrol', 'pwdlastset', 'lastlogon',
             'serviceprincipalname', 'msds-allowedtoactonbehalfofotheridentity',
             'ntsecuritydescriptor', 'unicodepwd', 'description',
-            # gMSA attributes
+            'name', 'whencreated', 'whenchanged', 'objectcategory',
+            'dnshostname', 'operatingsystem', 'primarygroupid',
+            # gMSA attributes (if gMSA is configured)
             'msds-managedpassword', 'msds-groupmsamembership',
+            # Note: LAPS attributes (ms-mcs-admpwd, mslaps-*) are NOT included
+            # by default since LAPS is optional and may not be installed
         }
 
 
