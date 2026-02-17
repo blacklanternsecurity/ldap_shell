@@ -155,34 +155,35 @@ class ADWSStandardExtendedOperations:
         Note: ADWS handles paging automatically, so we just perform a normal search.
         The search_scope parameter is accepted for compatibility but not used (ADWS always uses subtree).
         """
-        log.debug('[paged_search] Called with base=%r, filter=%r, attrs type=%s, generator=%s',
-                  search_base, search_filter, type(attributes).__name__, generator)
         self._connection.search(search_base, search_filter, attributes=attributes)
 
-        # If generator=True, yield entries in the format expected by ldap3
         if generator:
-            for entry in self._connection.entries:
-                # Convert ADWSEntry to ldap3-style dict format for generator mode
-                attributes_dict = {}
-                for attr in entry._attributes:
-                    attr_obj = entry[attr]
-                    # Get values list from ADWSAttribute
-                    if hasattr(attr_obj, 'values'):
-                        # Filter out None values
-                        values = [v for v in attr_obj.values if v is not None]
-                        if values:  # Only include non-empty attributes
-                            attributes_dict[attr] = values
-                    elif attr_obj.value is not None:
-                        attributes_dict[attr] = [attr_obj.value]
+            return self._paged_search_as_generator()
 
-                yield {
-                    'type': 'searchResEntry',
-                    'dn': entry.entry_dn,
-                    'attributes': attributes_dict
-                }
-
-        # Return None for non-generator mode (ldapdomaindump compatibility)
         return None
+
+    def _paged_search_as_generator(self) -> Generator:
+        """Yield entries in ldap3-style dict format for generator mode.
+
+        Separated from paged_search() because having yield in that function
+        would make it a generator function, preventing eager execution of search().
+        """
+        for entry in self._connection.entries:
+            attributes_dict = {}
+            for attr in entry._attributes:
+                attr_obj = entry[attr]
+                if hasattr(attr_obj, 'values'):
+                    values = [v for v in attr_obj.values if v is not None]
+                    if values:
+                        attributes_dict[attr] = values
+                elif attr_obj.value is not None:
+                    attributes_dict[attr] = [attr_obj.value]
+
+            yield {
+                'type': 'searchResEntry',
+                'dn': entry.entry_dn,
+                'attributes': attributes_dict
+            }
 
     def who_am_i(self) -> str:
         """
@@ -558,23 +559,14 @@ class ADWSConnection:
                 attr_list.append('distinguishedName')
 
         try:
-            log.debug('[search] Executing ADWS query: filter=%r, base=%r, attrs=%r',
-                      search_filter, search_base if search_base else self.base_dn, attr_list[:5])
             results_xml = self._pull_client.pull(
                 query=search_filter,
                 attributes=attr_list,
                 search_base=search_base if search_base else self.base_dn,
             )
 
-            log.debug('[search] pull() returned element with tag=%r, children=%d',
-                      results_xml.tag, len(list(results_xml)))
-
-            entry_count = 0
             for entry in self._parse_xml_entries(results_xml):
                 self.entries.append(entry)
-                entry_count += 1
-
-            log.debug('[search] Parsed %d entries from XML results', entry_count)
 
             # Populate response for compatibility (used by get_ntlm module)
             # Format: list of dicts with 'dn', 'attributes', and 'raw_attributes'
@@ -989,25 +981,11 @@ class ADWSConnection:
             ADWSEntry objects compatible with ldap3.Entry
         """
         # Find all items in the response
-        items_elements = xml_root.findall(".//wsen:Items", namespaces=NAMESPACES)
-        log.debug('[_parse_xml_entries] Found %d wsen:Items elements in results', len(items_elements))
-
-        if len(items_elements) == 0:
-            # Diagnostic: dump all tags to identify namespace issues
-            all_tags = set()
-            for elem in xml_root.iter():
-                all_tags.add(elem.tag)
-            log.debug('[_parse_xml_entries] All tags in xml_root: %s', all_tags)
-
-        for items in items_elements:
-            child_count = len(list(items))
-            log.debug('[_parse_xml_entries] Items element (tag=%r) has %d children', items.tag, child_count)
+        for items in xml_root.findall(".//wsen:Items", namespaces=NAMESPACES):
             for item in items:
                 entry = self._parse_xml_item(item)
                 if entry is not None:
                     yield entry
-                else:
-                    log.debug('[_parse_xml_entries] _parse_xml_item returned None for tag=%r', item.tag)
 
     def _parse_xml_item(self, item: ElementTree.Element) -> Optional[ADWSEntry]:
         """

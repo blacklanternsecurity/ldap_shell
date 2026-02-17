@@ -633,36 +633,14 @@ class ADWSConnect:
         ElementTree.register_namespace("wsen", NAMESPACES["wsen"])
         results: ElementTree.Element = ElementTree.Element("wsen:Items")
         more_results = True
-        batch_num = 0
         while more_results:
             et, new_enum_ctx, more_results = self._pull_results(
                 remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
             )
-            batch_num += 1
-
-            # Debug: show XML structure to diagnose empty results
-            logging.debug("[pull batch %d] Root tag: %s", batch_num, et.tag)
-            for child in et:
-                logging.debug("[pull batch %d]   Child tag: %s", batch_num, child.tag)
-                for grandchild in child:
-                    logging.debug("[pull batch %d]     Grandchild tag: %s", batch_num, grandchild.tag)
-                    for ggchild in grandchild:
-                        logging.debug("[pull batch %d]       GGChild tag: %s (children: %d)", batch_num, ggchild.tag, len(list(ggchild)))
-
-            items_found = et.findall(".//wsen:Items", namespaces=NAMESPACES)
-            logging.debug("[pull batch %d] findall('.//wsen:Items') found %d elements", batch_num, len(items_found))
-
-            if len(items_found) == 0:
-                # Try to find Items without namespace to diagnose namespace issues
-                all_tags = set()
-                for elem in et.iter():
-                    all_tags.add(elem.tag)
-                logging.debug("[pull batch %d] All unique tags in response: %s", batch_num, all_tags)
+            if len(et.findall(".//wsen:Items", namespaces=NAMESPACES)) == 0:
                 logging.debug("No objects returned in this batch")
             else:
-                for item in items_found:
-                    child_count = len(list(item))
-                    logging.debug("[pull batch %d] Items element has %d children", batch_num, child_count)
+                for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
                     results.append(item)
 
             # Update enumeration context for next iteration
@@ -672,8 +650,6 @@ class ADWSConnect:
                 logging.warning("Server indicated more results but did not provide new enumeration context")
                 more_results = False
 
-        total_items = len(list(results))
-        logging.debug("[pull] Query %r complete: %d batches, %d total Items elements collected", query, batch_num, total_items)
         return results
 
     @classmethod
