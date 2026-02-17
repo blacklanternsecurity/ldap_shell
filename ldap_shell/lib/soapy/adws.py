@@ -234,8 +234,7 @@ class NTLMAuth(ADWSAuthType):
 
 
 class KerberosAuth(ADWSAuthType):
-    def __init__(self, tgt: dict, tgs: dict | None = None, target_realm: str | None = None,
-                 password: str | None = None, nt_hash: str | None = None, aes_key: str | None = None):
+    def __init__(self, tgt: dict, tgs: dict | None = None, target_realm: str | None = None):
         """
         Kerberos authentication using TGT/TGS.
 
@@ -246,16 +245,10 @@ class KerberosAuth(ADWSAuthType):
                  'sessionKey': Session key
             tgs: Optional dictionary containing TGS information (same format as TGT)
             target_realm: Optional target realm for cross-realm authentication
-            password: Password for pyspnego authentication
-            nt_hash: NT hash for authentication
-            aes_key: AES key for authentication
         """
         self.tgt = tgt
         self.tgs = tgs
         self.target_realm = target_realm
-        self.password = password
-        self.nt_hash = nt_hash
-        self.aes_key = aes_key
 
 
 class ADWSConnect:
@@ -266,6 +259,7 @@ class ADWSConnect:
         username: str,
         auth: NTLMAuth | KerberosAuth,
         resource: str,
+        target_ip: str | None = None,
     ):
         """Creates an ADWS client connection to the specified endpoint.
 
@@ -275,8 +269,10 @@ class ADWSConnect:
             username: user to auth as
             auth: auth mechanism to use (NTLMAuth or KerberosAuth)
             resource: the resource dictates what endpoint the client connects to
+            target_ip: resolved IP for TCP connection (uses fqdn if not set)
         """
         self._fqdn = fqdn
+        self._target_ip = target_ip or fqdn
         self._domain = domain
         self._username = username
         self._auth = auth
@@ -301,7 +297,6 @@ class ADWSConnect:
                 fqdn=self._fqdn,
                 domain=self._domain,
                 username=self._username,
-                password=self._auth.password,
                 tgt=self._auth.tgt,
                 tgs=self._auth.tgs,
                 target_realm=self._auth.target_realm,
@@ -309,9 +304,15 @@ class ADWSConnect:
         raise NotImplementedError(f"Unsupported auth type: {type(self._auth)}")
 
     def _connect(self, remoteName: str, resource: str) -> ms_nmf.NMFConnection:
-        """Connect to the specified ADWS endpoint."""
-        server_address: tuple[str, int] = (remoteName, 9389)
-        logging.debug(f"Connecting to ADWS at {remoteName}:9389 for {self._resource}")
+        """Connect to the specified ADWS endpoint.
+
+        Args:
+            remoteName: fqdn (used for NMF via header and SPN)
+            resource: endpoint to connect to
+        """
+        connect_host = self._target_ip
+        server_address: tuple[str, int] = (connect_host, 9389)
+        logging.debug(f"Connecting to ADWS at {connect_host}:9389 for {self._resource}")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(server_address)
@@ -652,13 +653,13 @@ class ADWSConnect:
         return results
 
     @classmethod
-    def pull_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
-        return cls(ip, domain, username, auth, "Enumeration")
+    def pull_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth, target_ip: str | None = None) -> Self:
+        return cls(ip, domain, username, auth, "Enumeration", target_ip=target_ip)
 
     @classmethod
-    def put_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
-        return cls(ip, domain, username, auth, "Resource")
+    def put_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth, target_ip: str | None = None) -> Self:
+        return cls(ip, domain, username, auth, "Resource", target_ip=target_ip)
 
     @classmethod
-    def factory_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth) -> Self:
-        return cls(ip, domain, username, auth, "ResourceFactory")
+    def factory_client(cls, ip: str, domain: str, username: str, auth: NTLMAuth | KerberosAuth, target_ip: str | None = None) -> Self:
+        return cls(ip, domain, username, auth, "ResourceFactory", target_ip=target_ip)

@@ -6,7 +6,6 @@ dsinternals
 minikerberos
 winsspi
 impacket
-pyspnego[kerberos]
 pyOpenSSL
 pycryptodome
 prompt_toolkit

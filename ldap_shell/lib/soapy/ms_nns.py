@@ -5,46 +5,41 @@ The .NET NegotiateStream Protocol provides mutually authenticated
 and confidential communication over a TCP connection.
 
 Modified for ldap_shell - NTLM and Kerberos authentication support.
+Uses impacket for both NTLM and Kerberos (no pyspnego dependency).
 """
 
 import datetime
 import logging
+import os
 import socket
+import struct
 
 import impacket.ntlm
 import impacket.spnego
 import impacket.structure
 from Cryptodome.Cipher import ARC4
+from Cryptodome.Hash import HMAC, MD5
 from impacket.hresult_errors import ERROR_MESSAGES
-from impacket.krb5 import constants
-from impacket.krb5.asn1 import AP_REQ, AP_REP, Authenticator, EncAPRepPart, TGS_REP, seq_set
-from impacket.krb5.crypto import Key, _enctype_table
-from impacket.krb5.types import Principal, KerberosTime, Ticket
+from impacket.krb5 import constants as krb5_constants
+from impacket.krb5.asn1 import AP_REQ, AP_REP, TGS_REP, Authenticator, EncAPRepPart, seq_set
+from impacket.krb5.crypto import Key as KerberosKey
+from impacket.krb5.gssapi import (
+    GSS_C_MUTUAL_FLAG,
+    GSS_C_REPLAY_FLAG,
+    GSS_C_SEQUENCE_FLAG,
+    CheckSumField,
+    GSSAPI as krb5_gssapi,
+    MechIndepToken,
+    KRB_OID,
+)
 from impacket.krb5.kerberosv5 import getKerberosTGS
-from pyasn1.codec.der import decoder, encoder
+from impacket.krb5.types import Principal, KerberosTime, Ticket
+from impacket.spnego import SPNEGO_NegTokenInit, SPNEGO_NegTokenResp, TypesMech
+from pyasn1.codec.ber import decoder
+from pyasn1.codec.der import encoder
 from pyasn1.type.univ import noValue
 
 from .encoder.records.utils import Net7BitInteger
-
-
-def hexdump(data, length=16):
-    def to_ascii(byte):
-        if 32 <= byte <= 126:
-            return chr(byte)
-        else:
-            return "."
-
-    def format_line(offset, line_bytes):
-        hex_part = " ".join(f"{byte:02X}" for byte in line_bytes)
-        ascii_part = "".join(to_ascii(byte) for byte in line_bytes)
-        return f"{offset:08X}  {hex_part:<{length*3}}  {ascii_part}"
-
-    lines = []
-    for i in range(0, len(data), length):
-        line_bytes = data[i : i + length]
-        lines.append(format_line(i, line_bytes))
-
-    return "\n".join(lines)
 
 
 class NNS_pkt(impacket.structure.Structure):
@@ -131,12 +126,14 @@ class NNS:
         # Kerberos support
         self._tgt = tgt
         self._tgs = tgs
-        self._target_realm = target_realm
+        self._target_realm = target_realm or domain
         # Set the kerberos target if TGT is provided
         self._kerberos_target = fqdn if tgt is not None else None
 
-        # SPNEGO client for Kerberos wrap/unwrap operations
-        self._spnego_client = None
+        # impacket GSSAPI wrapper for Kerberos wrap/unwrap (None = NTLM mode)
+        self._gss = None
+        self._krb_session_key = None
+        self._recv_sequence: int = 0
 
     def _fix_hashes(self, hash: str | bytes) -> bytes | str:
         """fixes up hash if present into bytes and
@@ -197,114 +194,179 @@ class NNS:
 
     def _recv(self, _: int = 0) -> bytes:
         """Receive an NNS packet and return the entire decrypted contents."""
-        logging.debug("NNS _recv: waiting for data from server")
-
-        nns_data = NNS_data()
-        try:
-            size_bytes = self._sock.recv(4)
-            if not size_bytes:
-                logging.error("NNS _recv: connection closed by server (no size bytes)")
-                raise ConnectionError("Connection closed by server")
-            size = int.from_bytes(size_bytes, "little")
-            logging.debug(f"NNS _recv: expecting {size} bytes")
-        except Exception as e:
-            logging.error(f"NNS _recv: failed to read size: {e}")
-            raise
+        size_bytes = self._sock.recv(4)
+        if not size_bytes:
+            raise ConnectionError("Connection closed by server")
+        size = int.from_bytes(size_bytes, "little")
 
         payload = b""
         while len(payload) != size:
             chunk = self._sock.recv(size - len(payload))
             if not chunk:
-                logging.error(f"NNS _recv: connection closed while reading payload (got {len(payload)}/{size} bytes)")
                 raise ConnectionError("Connection closed by server while reading payload")
             payload += chunk
-        nns_data["payload"] = payload
-        logging.debug(f"NNS _recv: received {len(payload)} bytes")
 
-        # Use GSS-API unwrap for Kerberos, NTLM SEAL for NTLM
-        if self._spnego_client is not None:
-            # Kerberos: Use GSS-API unwrap
-            logging.debug(f"NNS _recv: GSS-API unwrapping {len(payload)} bytes")
-            try:
-                unwrapped = self._spnego_client.unwrap(payload)
-                clearText = unwrapped.data
-                logging.debug(f"NNS _recv: unwrapped to {len(clearText)} bytes")
-                return clearText
-            except Exception as e:
-                logging.error(f"NNS _recv: GSS-API unwrap failed: {e}")
-                raise
+        if self._gss is not None:
+            # Kerberos: unwrap per-message token
+            if self._krb_session_key.enctype == 23:  # RC4-HMAC
+                clearText = self._rc4_unwrap(payload)
+            else:  # AES
+                clearText, _ = self._gss.GSS_Unwrap_LDAP(
+                    self._krb_session_key, payload, self._recv_sequence
+                )
+            self._recv_sequence += 1
+            return clearText
         else:
             # NTLM decryption
             nns_signed_payload = NNS_Signed_payload()
-            nns_signed_payload["signature"] = nns_data["payload"][0:16]
-            nns_signed_payload["cipherText"] = nns_data["payload"][16:]
+            nns_signed_payload["signature"] = payload[0:16]
+            nns_signed_payload["cipherText"] = payload[16:]
 
-            logging.debug(f"NNS _recv: decrypting {len(nns_signed_payload['cipherText'])} bytes (sequence={self._sequence})")
-            try:
-                clearText, sig = self.seal(nns_signed_payload["cipherText"])
-                logging.debug(f"NNS _recv: decrypted to {len(clearText)} bytes")
-                return clearText
-            except Exception as e:
-                logging.error(f"NNS _recv: decryption failed: {e}")
-                raise
+            clearText, sig = self.seal(nns_signed_payload["cipherText"])
+            return clearText
 
     def sendall(self, data: bytes):
         """send to server in sealed NNS data packet via tcp socket."""
-        logging.debug(f"NNS sendall: encrypting {len(data)} bytes (sequence={self._sequence})")
 
-        # Use GSS-API wrap for Kerberos, NTLM SEAL for NTLM
-        if self._spnego_client is not None:
-            # Kerberos: Use GSS-API wrap
-            try:
-                wrapped_data = self._spnego_client.wrap(data)
-                logging.debug(f"NNS sendall: GSS-API wrapped to {len(wrapped_data.data)} bytes")
+        if self._gss is not None:
+            # Kerberos: wrap per-message token
+            if self._krb_session_key.enctype == 23:  # RC4-HMAC
+                wrapped = self._rc4_wrap(data, self._sequence)
+            else:  # AES
+                cipherText, signature = self._gss.GSS_Wrap_LDAP(
+                    self._krb_session_key, data, self._sequence,
+                    direction='init', encrypt=True
+                )
+                wrapped = signature + cipherText
 
-                # Build the NNS data packet
-                pkt = NNS_data()
-                pkt["payload"] = wrapped_data.data
-
-                logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
-                self._sock.sendall(pkt.getData())
-                logging.debug("NNS sendall: data sent successfully")
-            except Exception as e:
-                logging.error(f"NNS sendall: GSS-API wrap failed: {e}")
-                raise
+            pkt = NNS_data()
+            pkt["payload"] = wrapped
+            self._sock.sendall(pkt.getData())
         else:
             # NTLM encryption
-            try:
-                cipherText, sig = impacket.ntlm.SEAL(
-                    self._flags,
-                    self._client_signing_key,
-                    self._client_sealing_key,
-                    data,
-                    data,
-                    self._sequence,
-                    self._client_sealing_handle,
-                )
-                logging.debug(f"NNS sendall: encrypted to {len(cipherText)} bytes with {len(sig.getData())} byte signature")
-            except Exception as e:
-                logging.error(f"NNS sendall: encryption failed: {e}")
-                raise
+            cipherText, sig = impacket.ntlm.SEAL(
+                self._flags,
+                self._client_signing_key,
+                self._client_sealing_key,
+                data,
+                data,
+                self._sequence,
+                self._client_sealing_handle,
+            )
 
-            # build the NNS data packet
             pkt = NNS_data()
 
-            # payload is signature prepended on the ciphertext
             payload = NNS_Signed_payload()
             payload["signature"] = sig
             payload["cipherText"] = cipherText
             pkt["payload"] = payload.getData()
 
-            logging.debug(f"NNS sendall: sending {len(pkt.getData())} total bytes")
-            try:
-                self._sock.sendall(pkt.getData())
-                logging.debug("NNS sendall: data sent successfully")
-            except Exception as e:
-                logging.error(f"NNS sendall: socket send failed: {e}")
-                raise
+            self._sock.sendall(pkt.getData())
 
-            # increment the sequence number after sending
-            self._sequence += 1
+        # increment the sequence number after sending
+        self._sequence += 1
+
+    def _rc4_wrap(self, data, seq_num):
+        """Wrap data using RFC 4757 RC4-HMAC (bare mechanism token, no MechIndepToken).
+
+        Produces a 32-byte WRAP header followed by RC4-encrypted data.
+        """
+        key = self._krb_session_key
+
+        # 1-byte padding per RFC 4757
+        data += b'\x01'
+
+        # WRAP header prefix (8 bytes): TOK_ID, SGN_ALG, SEAL_ALG, Filler
+        header_prefix = struct.pack('<HHHH', 0x0102, 0x0011, 0x0010, 0xFFFF)
+
+        # SND_SEQ: seq number (BE) + direction indicator (initiator = 0x00000000)
+        snd_seq_raw = struct.pack('>L', seq_num) + b'\x00\x00\x00\x00'
+
+        # Random 8-byte confounder
+        confounder = os.urandom(8)
+
+        # Signing key
+        Ksign = HMAC.new(key.contents, b'signaturekey\0', MD5).digest()
+
+        # SGN_CKSUM
+        sgn_inner = MD5.new(
+            struct.pack('<L', 13) + header_prefix + confounder + data
+        ).digest()
+        sgn_cksum = HMAC.new(Ksign, sgn_inner, MD5).digest()[:8]
+
+        # Sealing key
+        Klocal = bytes(b ^ 0xF0 for b in key.contents)
+        Kcrypt = HMAC.new(Klocal, struct.pack('<L', 0), MD5).digest()
+        Kcrypt = HMAC.new(Kcrypt, struct.pack('>L', seq_num), MD5).digest()
+
+        # Encrypt confounder + data as one continuous RC4 stream
+        rc4 = ARC4.new(Kcrypt)
+        enc_confounder = rc4.encrypt(confounder)
+        enc_data = rc4.encrypt(data)
+
+        # Encrypt SND_SEQ
+        Kseq = HMAC.new(key.contents, struct.pack('<L', 0), MD5).digest()
+        Kseq = HMAC.new(Kseq, sgn_cksum, MD5).digest()
+        enc_snd_seq = ARC4.new(Kseq).encrypt(snd_seq_raw)
+
+        # Build bare mechanism token: header(8) + SND_SEQ(8) + SGN_CKSUM(8) + Confounder(8) + data
+        bare_token = header_prefix + enc_snd_seq + sgn_cksum + enc_confounder + enc_data
+
+        # Windows NNS expects RC4 per-message tokens wrapped in MechIndepToken
+        mit = MechIndepToken(bare_token, KRB_OID)
+        mit_header, mit_data = mit.to_bytes()
+        return mit_header + mit_data
+
+    def _rc4_unwrap(self, payload):
+        """Unwrap RFC 4757 RC4-HMAC wrapped data (handles both bare and MechIndepToken).
+
+        The key derivation is self-contained: the decryption key is derived
+        from the token's embedded SGN_CKSUM and SND_SEQ, not from external
+        sequence numbers or direction parameters.
+        """
+        key = self._krb_session_key
+
+        # Strip MechIndepToken (APPLICATION 0 = 0x60) wrapper if present.
+        # We parse manually because impacket's MechIndepToken.from_bytes()
+        # has a BER short-form length bug in get_length() that causes a
+        # 4-byte data misalignment when inner length < 128.
+        if payload[0:1] == b'\x60':
+            idx = 1
+            # Parse BER definite-length encoding
+            if payload[idx] < 0x80:
+                idx += 1  # Short form: single byte is the length
+            else:
+                num_len_bytes = payload[idx] & 0x7F
+                idx += 1 + num_len_bytes  # Long form: skip length bytes
+            # Skip OID (tag 0x06 + 1-byte length + OID data bytes)
+            if payload[idx] == 0x06:
+                oid_data_len = payload[idx + 1]
+                idx += 2 + oid_data_len
+            payload = payload[idx:]
+
+        # Parse 32-byte WRAP header:
+        # header_prefix(8) + SND_SEQ(8) + SGN_CKSUM(8) + Confounder(8)
+        enc_snd_seq = payload[8:16]
+        sgn_cksum = payload[16:24]
+        enc_confounder = payload[24:32]
+        enc_data = payload[32:]
+
+        # Derive sequence key and decrypt SND_SEQ
+        Kseq = HMAC.new(key.contents, struct.pack('<L', 0), MD5).digest()
+        Kseq = HMAC.new(Kseq, sgn_cksum, MD5).digest()
+        snd_seq = ARC4.new(Kseq).encrypt(enc_snd_seq)  # RC4 encrypt == decrypt
+
+        # Derive decryption key from sender's sequence number
+        Klocal = bytes(b ^ 0xF0 for b in key.contents)
+        Kcrypt = HMAC.new(Klocal, struct.pack('<L', 0), MD5).digest()
+        Kcrypt = HMAC.new(Kcrypt, snd_seq[:4], MD5).digest()
+
+        # Decrypt confounder + data as one continuous RC4 stream
+        rc4 = ARC4.new(Kcrypt)
+        plaintext = rc4.decrypt(enc_confounder + enc_data)
+
+        # Skip 8-byte confounder, remove 1-byte padding
+        return plaintext[8:-1]
 
     def auth_ntlm(self) -> None:
         """Authenticate to the dest with NTLMV2 authentication"""
@@ -428,302 +490,178 @@ class NNS:
             raise SystemExit(f"[-] NTLM Auth Failed with error {err_type} {err_msg}")
 
     def auth_kerberos(self) -> None:
-        """Authenticate to the dest with Kerberos authentication using pyspnego"""
-        try:
-            import spnego
-            from spnego import NegotiateOptions
-        except ImportError:
-            logging.error("pyspnego library not installed. Install with: pip install pyspnego[kerberos]")
-            raise SystemExit("[-] pyspnego library required for Kerberos authentication")
+        """Authenticate to ADWS using Kerberos via impacket.
 
-        import os
-        import tempfile
-        from impacket.krb5.ccache import CCache
+        Uses the stored TGT/TGS to build an AP_REQ with mutual authentication,
+        wraps it in SPNEGO, and negotiates via NNS handshake. After authentication,
+        sets up impacket's GSS-API wrap/unwrap for channel encryption.
+        """
+        logging.debug('Authenticating to ADWS via Kerberos')
 
-        logging.debug("Attempting Kerberos authentication to ADWS using pyspnego")
+        domain = self._target_realm or self._domain
+        tgt = self._tgt
+        tgs_dict = self._tgs
 
-        temp_ccache = None
-        temp_krb5conf = None
-        original_krb5ccname = os.environ.get('KRB5CCNAME')
-        original_krb5_config = os.environ.get('KRB5_CONFIG')
-
-        try:
-            # If we have TGT/TGS from impacket, write them to a temporary ccache
-            # so pyspnego can read them via GSSAPI
-            if self._tgt is not None:
-                logging.debug("Writing TGT/TGS to temporary ccache for pyspnego")
-
-                # Create a temporary krb5.conf to configure GSSAPI properly
-                temp_fd, temp_krb5conf = tempfile.mkstemp(prefix='krb5_', suffix='.conf')
-                krb5conf_content = f"""[libdefaults]
-    default_realm = {self._domain.upper()}
-    dns_lookup_realm = false
-    dns_lookup_kdc = false
-    rdns = false
-    dns_canonicalize_hostname = false
-
-[realms]
-    {self._domain.upper()} = {{
-        kdc = {self._fqdn}
-        admin_server = {self._fqdn}
-    }}
-
-[domain_realm]
-    .{self._domain.lower()} = {self._domain.upper()}
-    {self._domain.lower()} = {self._domain.upper()}
-"""
-                os.write(temp_fd, krb5conf_content.encode('utf-8'))
-                os.close(temp_fd)
-                os.environ['KRB5_CONFIG'] = temp_krb5conf
-                logging.debug(f"Created temporary krb5.conf: {temp_krb5conf}")
-
-                # Create a temporary ccache file
-                temp_fd, temp_ccache = tempfile.mkstemp(prefix='krb5cc_ldapshell_', suffix='.ccache')
-                os.close(temp_fd)
-
-                # Create CCache object
-                ccache = CCache()
-                ccache.fromTGT(self._tgt['KDC_REP'], self._tgt['oldSessionKey'], self._tgt['sessionKey'])
-
-                # If we have TGS, add it too
-                if self._tgs is not None:
-                    # Extract the service principal from TGS
-                    tgs_rep = self._tgs['KDC_REP']
-                    service_principal = f"HOST/{self._fqdn}@{self._domain.upper()}"
-                    ccache.fromTGS(self._tgs['KDC_REP'], self._tgs['oldSessionKey'], self._tgs['sessionKey'])
-
-                # Save the ccache to the temp file
-                ccache.saveFile(temp_ccache)
-
-                # Set KRB5CCNAME to point to our temp ccache
-                os.environ['KRB5CCNAME'] = temp_ccache
-                logging.debug(f"Set KRB5CCNAME to temporary ccache: {temp_ccache}")
-
-                # Debug: List credentials in the ccache
-                import subprocess
-                try:
-                    klist_output = subprocess.run(
-                        ['klist', '-c', temp_ccache],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    logging.debug(f"klist output:\n{klist_output.stdout}")
-                    if klist_output.stderr:
-                        logging.debug(f"klist stderr:\n{klist_output.stderr}")
-                except Exception as e:
-                    logging.debug(f"Failed to run klist: {e}")
-
-            # Create SPNEGO client context for Kerberos authentication
-            # The hostname should be the FQDN of the DC for proper SPN resolution
-            logging.debug(f"Creating SPNEGO client for {self._username}@{self._domain.upper()} -> {self._fqdn}")
-
-            # Build the client context
-            # pyspnego will handle the GSSAPI/SSPI calls to get Kerberos tickets
-            # If we created a temp ccache above, use it without password (GSSAPI will read from ccache)
-            # If we didn't create a temp ccache, use password (pyspnego will get tickets directly)
-            use_password = self._password if temp_ccache is None else None
-
-            client = spnego.client(
-                username=f"{self._username}@{self._domain.upper()}",
-                password=use_password,
-                hostname=self._fqdn,
-                service="HOST",  # ADWS uses the HOST service principal
-                protocol="kerberos",  # Force Kerberos (don't fall back to NTLM)
-                options=NegotiateOptions.use_gssapi,  # Use GSSAPI on Linux, SSPI on Windows
+        # Step 1: Get TGS for HOST/<fqdn> if not already provided
+        if tgs_dict is not None:
+            tgs = tgs_dict['KDC_REP']
+            cipher = tgs_dict['cipher']
+            sessionkey = tgs_dict['sessionKey']
+        else:
+            # Request TGS from TGT
+            servername = Principal(
+                'HOST/%s' % self._fqdn,
+                type=krb5_constants.PrincipalNameType.NT_SRV_INST.value
+            )
+            tgs, cipher, _, sessionkey = getKerberosTGS(
+                servername, domain, self._fqdn,
+                tgt['KDC_REP'], tgt['cipher'], tgt['sessionKey']
             )
 
-            logging.debug("SPNEGO client created, generating initial token")
+        # Step 2: Extract ticket from TGS response
+        tgs_rep = decoder.decode(tgs, asn1Spec=TGS_REP())[0]
+        ticket = Ticket()
+        ticket.from_asn1(tgs_rep['ticket'])
 
-            # Generate the initial authentication token
-            out_token = client.step()
+        # Step 3: Build AP_REQ with mutual authentication required
+        apReq = AP_REQ()
+        apReq['pvno'] = 5
+        apReq['msg-type'] = int(krb5_constants.ApplicationTagNumbers.AP_REQ.value)
+        apReq['ap-options'] = krb5_constants.encodeFlags(
+            [krb5_constants.APOptions.mutual_required.value]
+        )
+        seq_set(apReq, 'ticket', ticket.to_asn1)
 
-            if not out_token:
-                raise ValueError("pyspnego failed to generate initial Kerberos token")
+        # Step 4: Build Authenticator
+        username = Principal(
+            self._username,
+            type=krb5_constants.PrincipalNameType.NT_PRINCIPAL.value
+        )
+        authenticator = Authenticator()
+        authenticator['authenticator-vno'] = 5
+        authenticator['crealm'] = domain
+        seq_set(authenticator, 'cname', username.components_to_asn1)
+        now = datetime.datetime.utcnow()
+        authenticator['cusec'] = now.microsecond
+        authenticator['ctime'] = KerberosTime.to_asn1(now)
 
-            logging.debug(f"Generated Kerberos token ({len(out_token)} bytes)")
+        # Step 5: Add GSS checksum with required security flags
+        GSS_C_CONF_FLAG = 16
+        GSS_C_INTEG_FLAG = 32
+        gss_flags = (GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG | GSS_C_SEQUENCE_FLAG |
+                     GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG)
 
-            # Send the initial token via NNS handshake
+        authenticator['cksum'] = noValue
+        authenticator['cksum']['cksumtype'] = 0x8003
+        chkField = CheckSumField()
+        chkField['Lgth'] = 16
+        chkField['Flags'] = gss_flags
+        authenticator['cksum']['checksum'] = chkField.getData()
+
+        # Step 6: Encrypt authenticator with TGS session key (key usage 11)
+        encodedAuthenticator = encoder.encode(authenticator)
+        encryptedEncodedAuthenticator = cipher.encrypt(
+            sessionkey, 11, encodedAuthenticator, None
+        )
+
+        apReq['authenticator'] = noValue
+        apReq['authenticator']['etype'] = cipher.enctype
+        apReq['authenticator']['cipher'] = encryptedEncodedAuthenticator
+
+        # Step 7: Wrap AP_REQ in SPNEGO NegTokenInit
+        blob = SPNEGO_NegTokenInit()
+        blob['MechTypes'] = [TypesMech['MS KRB5 - Microsoft Kerberos 5']]
+        blob['MechToken'] = encoder.encode(apReq)
+
+        # Step 8: Send via NNS handshake
+        NNS_handshake(
+            message_id=MessageID.IN_PROGRESS,
+            major_version=1,
+            minor_version=0,
+            payload=blob.getData(),
+        ).send(self._sock)
+
+        # Step 9: Receive server response (mutual auth handshake)
+        NNS_msg_resp = NNS_handshake(
+            message_id=int.from_bytes(self._sock.recv(1), "big"),
+            major_version=int.from_bytes(self._sock.recv(1), "big"),
+            minor_version=int.from_bytes(self._sock.recv(1), "big"),
+            payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
+        )
+
+        # Check for errors
+        if NNS_msg_resp["message_id"] == MessageID.ERROR:
+            err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
+            if err_code in ERROR_MESSAGES:
+                err_type, err_msg = ERROR_MESSAGES[err_code]
+                raise SystemExit(f"[-] Kerberos Auth Failed: {err_type} {err_msg}")
+            raise SystemExit(f"[-] Kerberos Auth Failed with error code: 0x{err_code:08x}")
+
+        # Handle mutual auth: server sends DONE or IN_PROGRESS with AP_REP
+        server_payload = NNS_msg_resp["payload"]
+        if NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
+            # Server needs another round — send empty DONE to complete
             NNS_handshake(
-                message_id=MessageID.IN_PROGRESS,
+                message_id=MessageID.DONE,
                 major_version=1,
                 minor_version=0,
-                payload=out_token,
+                payload=b'',
             ).send(self._sock)
 
-            logging.debug("Sent initial Kerberos token to server")
-
-            # Receive server response
-            NNS_msg_resp = NNS_handshake(
+            # Receive final DONE
+            NNS_msg_final = NNS_handshake(
                 message_id=int.from_bytes(self._sock.recv(1), "big"),
                 major_version=int.from_bytes(self._sock.recv(1), "big"),
                 minor_version=int.from_bytes(self._sock.recv(1), "big"),
                 payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
             )
+            if NNS_msg_final["message_id"] == MessageID.ERROR:
+                err_code = int.from_bytes(NNS_msg_final["payload"], "big")
+                raise SystemExit(f"[-] Kerberos Auth Failed at final step with error code: 0x{err_code:08x}")
 
-            logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
-            logging.debug(f"Response payload length: {len(NNS_msg_resp['payload'])} bytes")
+        elif NNS_msg_resp["message_id"] != MessageID.DONE:
+            raise SystemExit(f"[-] Kerberos Auth: Unexpected message ID: 0x{NNS_msg_resp['message_id']:02x}")
 
-            # Check for errors
-            if NNS_msg_resp["message_id"] == MessageID.ERROR:
-                err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
-                logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
-                if err_code in ERROR_MESSAGES:
-                    err_type, err_msg = ERROR_MESSAGES[err_code]
-                    raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
-                else:
-                    raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
-
-            # Process server's mutual authentication response if present
-            # The server may send DONE with an AP-REP token that we need to process
-            if NNS_msg_resp["message_id"] == MessageID.DONE and len(NNS_msg_resp["payload"]) > 0:
-                logging.debug(f"Server sent DONE with mutual auth token ({len(NNS_msg_resp['payload'])} bytes)")
-                # Process the AP-REP for mutual authentication
-                client.step(NNS_msg_resp["payload"])
-                logging.debug("Processed server's mutual authentication token")
-
-            # Continue authentication handshake if server sent more data
-            while not client.complete and NNS_msg_resp["message_id"] == MessageID.IN_PROGRESS:
-                in_token = NNS_msg_resp["payload"]
-                logging.debug(f"Processing server token ({len(in_token)} bytes)")
-
-                # Process server's response and generate next token
-                out_token = client.step(in_token)
-
-                if out_token:
-                    logging.debug(f"Sending response token ({len(out_token)} bytes)")
-                    NNS_handshake(
-                        message_id=MessageID.IN_PROGRESS,
-                        major_version=1,
-                        minor_version=0,
-                        payload=out_token,
-                    ).send(self._sock)
-
-                    # Receive next response
-                    NNS_msg_resp = NNS_handshake(
-                        message_id=int.from_bytes(self._sock.recv(1), "big"),
-                        major_version=int.from_bytes(self._sock.recv(1), "big"),
-                        minor_version=int.from_bytes(self._sock.recv(1), "big"),
-                        payload=self._sock.recv(int.from_bytes(self._sock.recv(2), "big")),
-                    )
-
-                    logging.debug(f"Received response with message_id: 0x{NNS_msg_resp['message_id']:02x}")
-
-                    # Check for errors
-                    if NNS_msg_resp["message_id"] == MessageID.ERROR:
-                        err_code = int.from_bytes(NNS_msg_resp["payload"], "big")
-                        logging.error(f"Server returned error code: {err_code} (0x{err_code:04x})")
-                        if err_code in ERROR_MESSAGES:
-                            err_type, err_msg = ERROR_MESSAGES[err_code]
-                            raise SystemExit(f"[-] Kerberos Auth Failed with error {err_type} {err_msg}")
-                        else:
-                            raise SystemExit(f"[-] Kerberos Auth Failed with error code {err_code} (0x{err_code:08x})")
-                else:
-                    # No more tokens to send, authentication should be complete
-                    break
-
-            if not client.complete:
-                logging.error(f"Kerberos authentication incomplete: client.complete={client.complete}, message_id=0x{NNS_msg_resp['message_id']:02x}")
-                raise ValueError("Kerberos authentication did not complete successfully")
-
-            logging.debug("Kerberos authentication handshake completed successfully")
-
-            # Extract the session key for NNS channel encryption
-            # Use the Kerberos TGS session key, not the GSSAPI session key
-            # MS-NNS expects the actual Kerberos session key from the ticket
+        # Step 10: Process AP_REP to extract subkey (if present)
+        # The server's response contains a SPNEGO NegTokenResp wrapping an AP_REP.
+        # The AP_REP may contain a subkey that MUST be used for subsequent encryption.
+        enc_key = sessionkey
+        if server_payload and len(server_payload) > 0:
             try:
-                if self._tgs is not None and 'sessionKey' in self._tgs:
-                    # Use the session key from the TGS
-                    session_key_bytes = self._tgs['sessionKey'].contents
-                    logging.debug(f"Using TGS session key ({len(session_key_bytes)} bytes)")
-                else:
-                    # Fallback to pyspnego session key
-                    session_key_bytes = client.session_key
-                    if not session_key_bytes:
-                        logging.warning("No session key available, using fallback")
-                        session_key_bytes = b'\x00' * 16
-                    else:
-                        logging.debug(f"Using pyspnego session key ({len(session_key_bytes)} bytes)")
+                spnego_resp = SPNEGO_NegTokenResp(server_payload)
+                ap_rep_data = spnego_resp['ResponseToken']
+                if ap_rep_data and len(ap_rep_data) > 0:
+                    raw_token = bytes(ap_rep_data)
+                    # The ResponseToken may be wrapped in a GSS-API InitialContextToken
+                    # (APPLICATION 0 = 0x60). Find the actual AP_REP (APPLICATION 15 = 0x6F).
+                    if raw_token[0] != 0x6F:
+                        ap_rep_idx = raw_token.find(b'\x6f')
+                        if ap_rep_idx >= 0:
+                            raw_token = raw_token[ap_rep_idx:]
+                        else:
+                            raise ValueError('No AP_REP (0x6F) found in ResponseToken')
+                    ap_rep = decoder.decode(raw_token, asn1Spec=AP_REP())[0]
+                    enc_part = ap_rep['enc-part']
+                    # Decrypt AP_REP enc-part with TGS session key (key usage 12)
+                    dec_part = cipher.decrypt(sessionkey, 12, bytes(enc_part['cipher']))
+                    enc_ap_rep = decoder.decode(dec_part, asn1Spec=EncAPRepPart())[0]
 
-                self._session_key = session_key_bytes
-                self._sequence = 0
-
-                # Set up encryption keys for NNS channel
-                # MS-NNS uses the same encryption mechanism for both NTLM and Kerberos
-                # Only the source of the session key differs
-                self._flags = (
-                    impacket.ntlm.NTLMSSP_NEGOTIATE_SIGN |
-                    impacket.ntlm.NTLMSSP_NEGOTIATE_SEAL |
-                    impacket.ntlm.NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY
-                )
-
-                # Derive encryption keys from Kerberos session key using NTLM key derivation
-                # This is the same process used for NTLM with extended session security
-                self._client_signing_key = impacket.ntlm.SIGNKEY(
-                    self._flags, self._session_key
-                )
-                self._server_signing_key = impacket.ntlm.SIGNKEY(
-                    self._flags, self._session_key, "Server"
-                )
-                self._client_sealing_key = impacket.ntlm.SEALKEY(
-                    self._flags, self._session_key
-                )
-                self._server_sealing_key = impacket.ntlm.SEALKEY(
-                    self._flags, self._session_key, "Server"
-                )
-
-                # Initialize RC4 ciphers for NNS encryption
-                cipher_client = ARC4.new(self._client_sealing_key)
-                self._client_sealing_handle = cipher_client.encrypt
-                cipher_server = ARC4.new(self._server_sealing_key)
-                self._server_sealing_handle = cipher_server.encrypt
-
-                logging.debug("NNS encryption initialized with Kerberos session key using NTLM key derivation")
-
-                # Store the SPNEGO client for wrap/unwrap operations
-                # This is needed for Kerberos encryption which uses GSS-API wrap/unwrap
-                # instead of NTLM SEAL
-                self._spnego_client = client
-                logging.debug("Stored SPNEGO client for GSS-API wrap/unwrap operations")
-
+                    # Extract subkey if server provided one
+                    if enc_ap_rep['subkey'] and enc_ap_rep['subkey'].hasValue():
+                        subkey_type = int(enc_ap_rep['subkey']['keytype'])
+                        subkey_value = bytes(enc_ap_rep['subkey']['keyvalue'])
+                        enc_key = KerberosKey(subkey_type, subkey_value)
             except Exception as e:
-                logging.error(f"Failed to extract session key from pyspnego: {e}")
-                raise
+                logging.warning('Could not process AP_REP for subkey: %s', e)
 
-            logging.debug("Kerberos authentication successful via pyspnego")
+        # Step 11: Set up GSS-API wrap/unwrap for channel encryption
+        # GSSAPI() factory checks .enctype on the passed object to select the
+        # right wrapper (RC4/AES128/AES256). KerberosKey has .enctype, so passing
+        # enc_key directly picks the correct GSSAPI class even when the subkey
+        # etype differs from the TGS session key etype.
+        self._gss = krb5_gssapi(enc_key)
+        self._krb_session_key = enc_key
+        self._sequence = 0
+        self._recv_sequence = 0
 
-        except Exception as e:
-            logging.error(f"Kerberos authentication failed: {e}")
-            logging.debug("Exception details:", exc_info=True)
-            raise
-        finally:
-            # Clean up temporary files and restore environment
-            if temp_ccache is not None:
-                try:
-                    os.unlink(temp_ccache)
-                    logging.debug(f"Deleted temporary ccache: {temp_ccache}")
-                except Exception as e:
-                    logging.warning(f"Failed to delete temporary ccache {temp_ccache}: {e}")
-
-                # Restore original KRB5CCNAME
-                if original_krb5ccname is not None:
-                    os.environ['KRB5CCNAME'] = original_krb5ccname
-                    logging.debug(f"Restored KRB5CCNAME to: {original_krb5ccname}")
-                elif 'KRB5CCNAME' in os.environ:
-                    del os.environ['KRB5CCNAME']
-                    logging.debug("Removed temporary KRB5CCNAME from environment")
-
-            if temp_krb5conf is not None:
-                try:
-                    os.unlink(temp_krb5conf)
-                    logging.debug(f"Deleted temporary krb5.conf: {temp_krb5conf}")
-                except Exception as e:
-                    logging.warning(f"Failed to delete temporary krb5.conf {temp_krb5conf}: {e}")
-
-                # Restore original KRB5_CONFIG
-                if original_krb5_config is not None:
-                    os.environ['KRB5_CONFIG'] = original_krb5_config
-                    logging.debug(f"Restored KRB5_CONFIG to: {original_krb5_config}")
-                elif 'KRB5_CONFIG' in os.environ:
-                    del os.environ['KRB5_CONFIG']
-                    logging.debug("Removed temporary KRB5_CONFIG from environment")
+        logging.debug('Kerberos authentication successful via impacket')

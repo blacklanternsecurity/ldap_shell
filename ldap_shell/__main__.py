@@ -185,16 +185,14 @@ def perform_adws_connection(target: str, domain: str, username: str, password: s
                 username, password, domain, lmhash, nthash, aes_key, kdc_host
             )
 
-            # For Kerberos, we must use the DC hostname (kdc_host) not the domain name
-            # because the TGS is for HOST/kdc_host
+            # Use kdc_host (FQDN) for SPN/via, target (IP) for TCP connection
             client = ADWSConnection(
                 hostname=kdc_host,
                 domain=domain,
                 username=username,
-                password=password,
-                nt_hash=nthash,
+                target_ip=target,
                 tgt=tgt,
-                tgs=tgs
+                tgs=tgs,
             )
         elif nthash:
             log.debug('Using NT hash for authentication')

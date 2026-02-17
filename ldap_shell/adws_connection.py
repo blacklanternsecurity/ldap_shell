@@ -353,12 +353,13 @@ class ADWSConnection:
     def __init__(self, hostname: str, domain: str, username: str,
                  password: Optional[str] = None, nt_hash: Optional[str] = None,
                  tgt: Optional[dict] = None, tgs: Optional[dict] = None,
-                 target_realm: Optional[str] = None):
+                 target_realm: Optional[str] = None,
+                 target_ip: Optional[str] = None):
         """
         Initialize ADWS connection adapter.
 
         Args:
-            hostname: DC hostname or IP to connect to
+            hostname: DC FQDN (used for SPN and NMF via header)
             domain: Domain name (e.g., 'contoso.local')
             username: Username for authentication
             password: Password for authentication (if using password auth)
@@ -366,8 +367,10 @@ class ADWSConnection:
             tgt: TGT dictionary for Kerberos authentication
             tgs: TGS dictionary for Kerberos authentication
             target_realm: Target realm for cross-realm Kerberos authentication
+            target_ip: Resolved IP for TCP connection (uses hostname if not set)
         """
         self.hostname = hostname
+        self._target_ip = target_ip
         self.domain = domain
         self.username = username
         self.base_dn = ','.join([f'DC={part}' for part in domain.split('.')])
@@ -393,8 +396,7 @@ class ADWSConnection:
         # Create auth object
         if tgt is not None:
             # Kerberos authentication
-            self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm,
-                                     password=password, nt_hash=nt_hash)
+            self._auth = KerberosAuth(tgt=tgt, tgs=tgs, target_realm=target_realm)
             self.authentication = 'SASL'  # Kerberos uses SASL
         elif nt_hash:
             # NTLM with hash
@@ -442,6 +444,7 @@ class ADWSConnection:
                 domain=self.domain,
                 username=self.username,
                 auth=self._auth,
+                target_ip=self._target_ip,
             )
 
             log.debug('Successfully connected to ADWS (pull client)')
@@ -453,6 +456,7 @@ class ADWSConnection:
                     domain=self.domain,
                     username=self.username,
                     auth=self._auth,
+                    target_ip=self._target_ip,
                 )
                 log.debug('Successfully connected to ADWS (put client)')
             except Exception as e:
@@ -466,6 +470,7 @@ class ADWSConnection:
                     domain=self.domain,
                     username=self.username,
                     auth=self._auth,
+                    target_ip=self._target_ip,
                 )
                 log.debug('Successfully connected to ADWS (factory client)')
             except Exception as e:
