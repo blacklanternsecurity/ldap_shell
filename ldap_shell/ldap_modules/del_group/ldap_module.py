@@ -35,7 +35,6 @@ class LdapShellModule(BaseLdapModule):
         self.client.search(
             self.domain_dumper.root,
             f'(&(objectClass=group)(sAMAccountName={self.args.group_name}))',
-            SUBTREE,
             attributes=['distinguishedName']
         )
         

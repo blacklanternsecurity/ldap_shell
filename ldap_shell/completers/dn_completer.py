@@ -87,15 +87,15 @@ class DNCompleter(BaseArgumentCompleter):
             # Determine type
             if 'user' in obj_classes:
                 obj_type = 'User'
-                identifier = entry['attributes'].get('sAMAccountName', [''])
+                identifier = entry['attributes'].get('sAMAccountName', [''])[0]  # Get first value from list
                 highlight_color = COLOR_MAPPING['user']
             elif 'computer' in obj_classes:
                 obj_type = 'Computer'
-                identifier = entry['attributes'].get('sAMAccountName', [''])
+                identifier = entry['attributes'].get('sAMAccountName', [''])[0]  # Get first value from list
                 highlight_color = COLOR_MAPPING['computer']
             elif 'group' in obj_classes:
                 obj_type = 'Group'
-                identifier = entry['attributes'].get('sAMAccountName', [''])
+                identifier = entry['attributes'].get('sAMAccountName', [''])[0]  # Get first value from list
                 highlight_color = COLOR_MAPPING['group']
             elif 'organizationalUnit' in obj_classes:
                 obj_type = 'OU'
@@ -107,9 +107,9 @@ class DNCompleter(BaseArgumentCompleter):
                 highlight_color = COLOR_MAPPING['domain_root']
             elif 'groupPolicyContainer' in obj_classes:
                 obj_type = 'GPO'
-                # Get displayName or cn, considering possible missing attributes
-                display_name = entry['attributes'].get('displayName', [None])
-                cn_value = entry['attributes'].get('cn', [None])
+                # Get displayName or cn, considering possible missing attributes (values are lists)
+                display_name = entry['attributes'].get('displayName', [None])[0]  # Get first value
+                cn_value = entry['attributes'].get('cn', [None])[0]  # Get first value
                 identifier = display_name or cn_value or dn.split(',')[0].split('=')[1]
                 highlight_color = COLOR_MAPPING['gpo']
             else:

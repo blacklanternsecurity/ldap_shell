@@ -81,12 +81,18 @@ class ADObjectCompleter(BaseArgumentCompleter):
             for entry in search_generator:
                 if entry['type'] != 'searchResEntry':
                     continue
-                    
-                # Priority attributes for each object type
+
+                # Priority attributes for each object type (values are lists in ldap3 format)
                 if self.primary_attribute in entry['attributes']:
-                    objects.add(str(entry['attributes'][self.primary_attribute]))
+                    # Get first value from list
+                    values = entry['attributes'][self.primary_attribute]
+                    if values and len(values) > 0:
+                        objects.add(str(values[0]))
                 elif self.fallback_attribute in entry['attributes']:
-                    objects.add(str(entry['attributes'][self.fallback_attribute]))
+                    # Get first value from list
+                    values = entry['attributes'][self.fallback_attribute]
+                    if values and len(values) > 0:
+                        objects.add(str(values[0]))
             
         except Exception as e:
             print(f"Error fetching AD objects: {str(e)}")

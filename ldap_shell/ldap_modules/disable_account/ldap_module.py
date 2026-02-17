@@ -64,8 +64,8 @@ class LdapShellModule(BaseLdapModule):
             new_user_account_control = user_account_control | UF_ACCOUNT_DISABLE
             
             # Update userAccountControl attribute
-            result = self.client.modify(user_dn, 
-                                      {'userAccountControl': (ldap3.MODIFY_REPLACE, [new_user_account_control])})
+            result = self.client.modify(user_dn,
+                                      {'userAccountControl': [(ldap3.MODIFY_REPLACE, [new_user_account_control])]})
 
             if result:
                 self.log.info(f'User {self.args.username} disabled successfully!')

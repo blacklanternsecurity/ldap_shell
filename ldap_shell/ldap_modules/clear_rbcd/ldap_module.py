@@ -80,7 +80,7 @@ class LdapShellModule(BaseLdapModule):
                         #Delete ACE
                         sd['Dacl'].aces.remove(ace)
 
-                self.client.modify(target_dn, {'msDS-AllowedToActOnBehalfOfOtherIdentity': [ldap3.MODIFY_REPLACE, [sd.getData()]]})
+                self.client.modify(target_dn, {'msDS-AllowedToActOnBehalfOfOtherIdentity': [(ldap3.MODIFY_REPLACE, [sd.getData()])]})
 
                 if self.client.result['result'] == 0:
                     self.log.info(f'RBCD permissions cleared successfully! {self.args.grantee} can no longer impersonate users on {self.args.target}')
@@ -90,7 +90,7 @@ class LdapShellModule(BaseLdapModule):
                 sd = LdapUtils.create_empty_sd()
 
                 self.client.modify(target_dn,
-                           {'msDS-AllowedToActOnBehalfOfOtherIdentity': [ldap3.MODIFY_REPLACE, [sd.getData()]]})
+                           {'msDS-AllowedToActOnBehalfOfOtherIdentity': [(ldap3.MODIFY_REPLACE, [sd.getData()])]})
                 self.log.info(f'RBCD permissions cleared successfully!')
 
         except Exception as e:
