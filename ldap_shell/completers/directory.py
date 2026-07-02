@@ -1,13 +1,11 @@
 from pathlib import Path
-from prompt_toolkit.completion import Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 import os
 
 class DirectoryCompleter(BaseArgumentCompleter):
     """Completer for directory paths"""
     
-    def get_completions(self, document: Document, complete_event, current_word: str) -> list[Completion]:
+    def get_completions(self, full_text: str, current_word: str) -> list[CompletionItem]:
         completions = []
         
         try:
@@ -26,8 +24,8 @@ class DirectoryCompleter(BaseArgumentCompleter):
                     completion = str(item.relative_to(Path.cwd())) + '/' if not os.path.isabs(current_word) else str(item.absolute()) + '/'
                     
                     if completion.startswith(current_word):
-                        completions.append(Completion(
-                            completion,
+                        completions.append(CompletionItem(
+                            text=completion,
                             start_position=-len(current_word),
                             display=display_name,
                             display_meta="Directory"

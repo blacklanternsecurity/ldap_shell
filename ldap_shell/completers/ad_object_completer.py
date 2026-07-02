@@ -1,7 +1,4 @@
-from prompt_toolkit.completion import WordCompleter, Completion
-from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import HTML
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 from typing import Union, Dict, Optional
 from abc import abstractmethod
 from ldap3 import SUBTREE
@@ -19,19 +16,16 @@ class ADObjectCompleter(BaseArgumentCompleter):
         self.domain_dumper = domain_dumper
         self.cache_manager = ADObjectCacheManager()
 
-    def get_completions(self, document: Document, complete_event, current_word=None):
-        if not isinstance(document, Document):
-            return
-        
-        text = document.text_before_cursor
+    def get_completions(self, full_text: str, current_word=None):
+        text = full_text
         in_quotes = (text.count('"') % 2) == 1 or (text.count("'") % 2) == 1
-        
+
         # Get cache from manager
         cached_objects = self.cache_manager.get_cache(self.__class__.__name__)
         if cached_objects is None:
             cached_objects = self._get_ad_objects()
             self.cache_manager.set_cache(self.__class__.__name__, cached_objects)
-        
+
         if text.endswith(' '):
             word_before_cursor = ''
         else:
@@ -41,26 +35,16 @@ class ADObjectCompleter(BaseArgumentCompleter):
             if ' ' in obj and not in_quotes:
                 obj = f'"{obj}"'
             if word_before_cursor.lower() in obj.lower():
-                display = self._highlight_match(obj, word_before_cursor)
-                if self.highlight_color:
-                    display = f"<style bg='{self.highlight_color}'>{display}</style>"
-                yield Completion(
-                    obj,
+                display_text = self._highlight_match(obj, word_before_cursor)
+                yield CompletionItem(
+                    text=obj,
+                    display=display_text,
                     start_position=-len(word_before_cursor),
-                    display=HTML(display)
+                    highlight_color=self.highlight_color or ""
                 )
 
     def _highlight_match(self, text: str, substr: str) -> str:
-        """Highlights the matching part of the text"""
-        if not substr:
-            return text
-            
-        index = text.lower().find(substr.lower())
-        if index >= 0:
-            before = text[:index]
-            match = text[index:index + len(substr)]
-            after = text[index + len(substr):]
-            return f"{before}<b><style fg='black'>{match}</style></b>{after}"
+        """Returns the text as-is; color info is carried in highlight_color"""
         return text
 
     def _get_ad_objects(self):

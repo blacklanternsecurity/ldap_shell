@@ -1,13 +1,11 @@
-from prompt_toolkit.completion import Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 from ldap_shell.utils.module_loader import ModuleLoader
 from difflib import SequenceMatcher
 
 class CommandCompleter(BaseArgumentCompleter):
     """Completer for LDAP commands with fuzzy matching"""
 
-    def get_completions(self, document: Document, complete_event, current_word: str) -> list[Completion]:
+    def get_completions(self, full_text: str, current_word: str) -> list[CompletionItem]:
         list_modules = ModuleLoader.list_modules()
         completions = []
         
@@ -36,8 +34,8 @@ class CommandCompleter(BaseArgumentCompleter):
         # Create completion for each match
         for module, ratio in matches:
             completions.append(
-                Completion(
-                    module, 
+                CompletionItem(
+                    text=module,
                     start_position=-len(current_word),
                     display_meta=f'{ModuleLoader.load_module(module).__doc__}'
                 )

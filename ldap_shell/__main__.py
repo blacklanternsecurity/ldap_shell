@@ -25,7 +25,6 @@ from ldap_shell.krb5.kerberos_v5 import getKerberosTGT, getKerberosTGS
 from ldap_shell.krb5.types import Principal, Ticket, KerberosTime
 from ldap_shell.utils.spnego import SPNEGO_NegTokenInit, TypesMech
 from ldap_shell.utils import init_logging, parse_credentials
-from ldap_shell.prompt import Prompt
 
 log = logging.getLogger('ldap-shell')
 
@@ -126,15 +125,17 @@ def start_shell(options: argparse.Namespace):
     domain_dumper = ldapdomaindump.domainDumper(client.server, client, domain_dump_config)
 
     if options.non_interactive:
-            shell = Prompt(
-                domain_dumper, client, noninteractive=True
-            )
+        from ldap_shell.noninteractive import NonInteractiveShell
+        shell = NonInteractiveShell(domain_dumper, client)
+        shell.run()
     else:
-        shell = Prompt(
-            domain_dumper, client
-        )
-    log.info('Starting interactive shell')
-    shell.cmdloop()  # Blocks forever
+        from ldap_shell.app import LdapShellApp
+        log.info('Starting interactive shell')
+        app = LdapShellApp(domain_dumper, client)
+        try:
+            app.run()
+        finally:
+            os.system('stty sane 2>/dev/null; tput reset 2>/dev/null')
     log.info('Bye!')
 
 
@@ -291,7 +292,7 @@ def login_ldap3_kerberos(connection: ldap3.Connection, user: str, password: str,
 
     authenticator = Authenticator()
     authenticator['authenticator-vno'] = 5
-    authenticator['crealm'] = domain
+    authenticator['crealm'] = domain.upper()
     seq_set(authenticator, 'cname', user_name.components_to_asn1)
     now = datetime.datetime.utcnow()
 

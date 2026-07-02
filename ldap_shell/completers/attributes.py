@@ -1,6 +1,4 @@
-from prompt_toolkit.completion import FuzzyWordCompleter, Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 
 class AttributesCompleter(BaseArgumentCompleter):
     """Completer for LDAP attributes"""
@@ -17,31 +15,23 @@ class AttributesCompleter(BaseArgumentCompleter):
 		'instanceType', 'uSNChanged', 'uSNCreated'
 	]
     
-    def get_completions(self, document: Document, complete_event, current_word: str) -> list[Completion]:
+    def get_completions(self, full_text: str, current_word: str) -> list[CompletionItem]:
         # Split current input by comma
         if ',' in current_word:
             prefix = ','.join(current_word.split(',')[:-1]) + ','
             current_word = current_word.split(',')[-1].strip()
         else:
             prefix = ''
-            
-        # Create dictionary with attribute descriptions
-        meta_dict = {attr: "LDAP attribute" for attr in self.COMMON_LDAP_ATTRIBUTES}
-        
-        # Use FuzzyWordCompleter for attributes
-        completer = FuzzyWordCompleter(
-            words=self.COMMON_LDAP_ATTRIBUTES,
-            meta_dict=meta_dict
-        )
-        
+
         completions = []
-        for completion in completer.get_completions(Document(current_word.lower()), complete_event):
-            new_text = prefix + completion.text
-            completions.append(Completion(
-                new_text,
-                start_position=-len(current_word) - len(prefix),
-                display=completion.display,
-                display_meta=completion.display_meta
-            ))
-        
-        return completions 
+        for attr in self.COMMON_LDAP_ATTRIBUTES:
+            if current_word.lower() in attr.lower():
+                new_text = prefix + attr
+                completions.append(CompletionItem(
+                    text=new_text,
+                    display=attr,
+                    display_meta="LDAP attribute",
+                    start_position=-(len(current_word) + len(prefix))
+                ))
+
+        return completions

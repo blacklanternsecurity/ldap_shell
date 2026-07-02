@@ -1,11 +1,9 @@
-from prompt_toolkit.completion import Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 
 class MaskCompleter(BaseArgumentCompleter):
     """Completer for mask actions"""
     
-    def get_completions(self, document: Document, complete_event, current_word: str) -> list[Completion]:
+    def get_completions(self, full_text: str, current_word: str) -> list[CompletionItem]:
         completions = []
         
         options = [
@@ -22,8 +20,8 @@ class MaskCompleter(BaseArgumentCompleter):
         
         for option in options:
             if option.startswith(current_word.lower()):
-                completions.append(Completion(
-                    option,
+                completions.append(CompletionItem(
+                    text=option,
                     start_position=-len(current_word),
                     display=option,
                     display_meta="Action"

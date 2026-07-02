@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime
 from typing import Optional, Tuple
-from prompt_toolkit.history import FileHistory
+from ldap_shell.utils.history import CommandHistory
 
 log = logging.getLogger('ldap-shell.utils')
 
@@ -13,7 +13,7 @@ log = logging.getLogger('ldap-shell.utils')
 PY3 = True
 
 # Command history initialization
-history = FileHistory(os.path.expanduser('~/.ldap_shell_history'))
+history = CommandHistory(os.path.expanduser('~/.ldap_shell_history'))
 
 
 def init_logging(debug: bool, logs_dir_path: Optional[str] = None) -> None:

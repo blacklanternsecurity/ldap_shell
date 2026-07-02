@@ -1,5 +1,5 @@
 from typing import Union, List
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 from .ad_object_completer import ADObjectCompleter, UserCompleter, ComputerCompleter, GroupCompleter, OUCompleter
 from ..ldap_modules.base_module import ArgumentType
 from .directory import DirectoryCompleter
@@ -64,11 +64,11 @@ class MultiCompleter(BaseArgumentCompleter):
         self.completers = completers
         self.max_total_suggestions = 20
         
-    def get_completions(self, document, complete_event, current_word: str):
+    def get_completions(self, full_text: str, current_word: str):
         # Get all possible completions from each completer
         all_completions = defaultdict(list)
         for completer in self.completers:
-            completions = list(completer.get_completions(document, complete_event, current_word))
+            completions = list(completer.get_completions(full_text, current_word))
             if completions:  # Add only if there are results
                 all_completions[completer] = completions
         if not all_completions:

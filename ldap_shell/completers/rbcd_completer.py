@@ -1,6 +1,4 @@
-from prompt_toolkit.completion import WordCompleter, Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
+from .base import BaseArgumentCompleter, CompletionItem
 from ldap_shell.utils.ldaptypes import SR_SECURITY_DESCRIPTOR
 from ldap_shell.utils.ace_utils import AceUtils
 from ldap_shell.utils.ldap_utils import LdapUtils
@@ -10,11 +8,8 @@ class RBCDCompleter(BaseArgumentCompleter):
         self.client = ldap_connection
         self.domain_dumper = domain_dumper
 
-    def get_completions(self, document, complete_event, current_word):
-        if not isinstance(document, Document):
-            return
-        
-        text = document.text_before_cursor
+    def get_completions(self, full_text: str, current_word):
+        text = full_text
 
         target = text.split()[-2]
         if text.endswith(' '):
@@ -43,8 +38,8 @@ class RBCDCompleter(BaseArgumentCompleter):
 
         for user in users_list:
             if word_before_cursor.lower() in user.lower():
-                yield Completion(
-                    user,
+                yield CompletionItem(
+                    text=user,
                     start_position=-len(word_before_cursor),
                     display=user
                 )

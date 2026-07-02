@@ -1,7 +1,4 @@
-from prompt_toolkit.completion import WordCompleter, Completion
-from prompt_toolkit.document import Document
-from .base import BaseArgumentCompleter
-from prompt_toolkit.formatted_text import HTML
+from .base import BaseArgumentCompleter, CompletionItem
 from ldap3 import SUBTREE
 from ldap_shell.completers.base import ADObjectCacheManager
 
@@ -12,18 +9,15 @@ class DNCompleter(BaseArgumentCompleter):
         self.domain_dumper = domain_dumper
         self.cache_manager = ADObjectCacheManager()
 
-    def get_completions(self, document: Document, complete_event, current_word=None):
-        if not isinstance(document, Document):
-            return
+    def get_completions(self, full_text: str, current_word=None):
+        text = full_text.replace('"', '')
 
-        text = document.text_before_cursor.replace('"', '')
-        
         # Get cache from manager
         cached_objects = self.cache_manager.get_cache(self.__class__.__name__)
         if cached_objects is None:
             cached_objects = self._get_ad_objects()
             self.cache_manager.set_cache(self.__class__.__name__, cached_objects)
-        
+
         if text.endswith(' '):
             word_before_cursor = ''
         else:
@@ -33,27 +27,17 @@ class DNCompleter(BaseArgumentCompleter):
             # Check both identifier and DN
             if (word_before_cursor.lower() in obj['identifier'].lower() or
                 word_before_cursor.lower() in obj['dn'].lower()):
-                
-                display = self._highlight_match(obj['identifier'], word_before_cursor)
-                if obj['color']:
-                    display = f"<style bg='{obj['color']}'>{display}</style>"
-                yield Completion(
-                    text = f"\"{obj['dn']}\"",
+
+                display_text = self._highlight_match(obj['identifier'], word_before_cursor)
+                yield CompletionItem(
+                    text=f"\"{obj['dn']}\"",
+                    display=display_text,
                     start_position=-len(word_before_cursor),
-                    display=HTML(display)
+                    highlight_color=obj['color'] or ""
                 )
 
     def _highlight_match(self, text: str, substr: str) -> str:
-        """Highlights the matching part of the text"""
-        if not substr:
-            return text
-            
-        index = text.lower().find(substr.lower())
-        if index >= 0:
-            before = text[:index]
-            match = text[index:index + len(substr)]
-            after = text[index + len(substr):]
-            return f"{before}<b><style fg='black'>{match}</style></b>{after}"
+        """Returns the text as-is; color info is carried in highlight_color"""
         return text
 
     def _get_ad_objects(self):
